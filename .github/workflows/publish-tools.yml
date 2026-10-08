@@ -1,0 +1,33 @@
+name: Publish tool releases
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '*.pyw'
+      - '**/*.pyw'
+      - '.github/workflows/publish-tools.yml'
+      - '.github/scripts/publish_tools.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-tools
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Discover versioned scripts and publish verified attachments
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TOOL_REPOSITORY_ID: ${{ github.repository_id }}
+        run: python .github/scripts/publish_tools.py

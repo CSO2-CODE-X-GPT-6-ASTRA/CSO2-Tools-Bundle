@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.log
+*.log.*
+*.OLD
+*.bak
+.cso2-update-*
