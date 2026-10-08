@@ -1,0 +1,10 @@
+{
+  "version": "2026.09.20-vvd-alloc1",
+  "original_sha256": "53fec05d61c1bdd019a337c18f0e720c14e8644fa128a34a13d200cbcd20f946",
+  "patched_sha256": "e35518231a59b990909cca48d68b09ea0b07b303f0a6faf0d600c81b969d386d",
+  "site_rva": 146867,
+  "wrapper_rva": 339760,
+  "wrapper_size": 118,
+  "size_unchanged": true,
+  "scope": "VVD allocation only; native EnsureCapacity before allocation, one unlocked-only Purge/retry on failure"
+}

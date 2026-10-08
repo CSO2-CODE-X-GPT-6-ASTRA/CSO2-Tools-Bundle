@@ -51,7 +51,7 @@ def discover(root, repository_id):
     tools = {}
     keys = {'APP_ID', 'APP_VERSION', 'UPDATE_REPOSITORY_ID', 'UPDATE_PROTOCOL', 'UPDATE_TAG_PREFIX', 'UPDATE_COMPONENT_DIRS'}
     for path in sorted(root.rglob('*.pyw')):
-        if any(p.startswith('.') for p in path.relative_to(root).parts):
+        if any(p.startswith('.') or p == 'releases' for p in path.relative_to(root).parts):
             continue
         raw = path.read_bytes(); meta = {}
         tree = ast.parse(raw.decode('utf-8-sig'))
@@ -65,7 +65,7 @@ def discover(root, repository_id):
         if 'APP_ID' not in meta:
             continue
         product = meta['APP_ID']; version(meta['APP_VERSION'])
-        if product in tools or meta['UPDATE_REPOSITORY_ID'] != repository_id or meta['UPDATE_PROTOCOL'] not in (1, 2):
+        if product in tools or meta['UPDATE_REPOSITORY_ID'] != repository_id or meta['UPDATE_PROTOCOL'] not in (1, 2, 3):
             raise ValueError('Invalid product metadata')
         import re
         if not re.fullmatch('[a-z0-9]+(?:-[a-z0-9]+)*', product):
@@ -78,7 +78,7 @@ def discover(root, repository_id):
             if len(values) != 1 or json.loads(base64.b64decode(values[0])) != {}:
                 raise ValueError('Clear personal HOST settings before release')
         dirs = list(meta.get('UPDATE_COMPONENT_DIRS', ())); files = {}
-        if meta['UPDATE_PROTOCOL'] == 2 and not dirs:
+        if meta['UPDATE_PROTOCOL'] in (2, 3) and not dirs:
             raise ValueError('Missing dependency folders')
         for name in dirs:
             if not name or name.startswith('.') or any(c in name for c in '/\\:'):
@@ -141,7 +141,7 @@ def publish(root, output):
     chosen = '.'.join(map(str, chosen)); tag = prefix + chosen
     output.mkdir(parents=True, exist_ok=True); artifacts = {}; managed_paths=[]
     for product, tool in tools.items():
-        meta = tool['meta']; entry = product + '.pyw'; raw = stamp(tool['raw'], chosen)
+        meta = tool['meta']; entry = tool['path'].name if meta['UPDATE_PROTOCOL'] == 3 else product + '.pyw'; raw = stamp(tool['raw'], chosen)
         tool['path'].write_bytes(raw)
         managed_paths.append(tool['path'])
         source_folder = tool['path'].parent/'releases'/tag
@@ -155,6 +155,30 @@ def publish(root, output):
             old = previous.get(product)
             if old and all(old.get(k) == v for k,v in manifest.items() if k != 'source_sha256'):
                 manifest = old
+        elif meta['UPDATE_PROTOCOL'] == 3:
+            # PYW updates preserve the local dependency folder, accounts and saves.
+            # The full clean installation remains available as one Release 7Z.
+            manifest.update(entry=entry, size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+            (source_folder/entry).write_bytes(raw)
+            manual_name = tool['path'].stem + '.7z'
+            old = previous.get(product, {}); prior = old.get('manual_archive', {})
+            if (old.get('sha256') == manifest['sha256'] and old.get('source_sha256') == tool['source']
+                    and manual_name in assets
+                    and assets[manual_name].get('digest') == 'sha256:' + prior.get('sha256', '')):
+                manifest['manual_archive'] = prior
+            else:
+                seven = os.environ.get('SEVEN_ZIP') or shutil.which('7z') or shutil.which('7zz')
+                if not seven: raise RuntimeError('7-Zip is required')
+                with tempfile.TemporaryDirectory(prefix='local-server-release-') as temp:
+                    folder=Path(temp); (folder/entry).write_bytes(raw)
+                    for name, p in tool['files'].items():
+                        q=folder/name; q.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile(p,q)
+                    manual=output/manual_name
+                    if manual.exists(): manual.unlink()
+                    subprocess.run([seven,'a','-t7z','-mx=7','-ms=off','-mmt=2','-mtm=off','-mtc=off','-mta=off',
+                                    '-bso0','-bsp0',str(manual),entry,*tool['dirs']],cwd=folder,check=True)
+                manifest['manual_archive']=dict(asset=manual.name,size=manual.stat().st_size,sha256=digest(manual))
+                artifacts[manual.name]=manual
         else:
             files = {n: dict(size=p.stat().st_size, sha256=digest(p)) for n,p in tool['files'].items()}
             files[entry] = dict(size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
@@ -187,7 +211,7 @@ def publish(root, output):
                 manifest['manual_archive']=dict(asset=manual.name,size=manual.stat().st_size,sha256=digest(manual))
                 artifacts[manual.name]=manual
         metadata=output/(product+'.release.json')
-        metadata.write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+        metadata.write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8',newline='\n')
         shutil.copyfile(metadata,source_folder/metadata.name)
     pending=[]
     for name,path in artifacts.items():
@@ -198,6 +222,11 @@ def publish(root, output):
                     raise ValueError('Refusing to replace a published attachment: '+name)
                 pending.append(path)
         else: pending.append(path)
+    if os.environ.get('TOOL_BUILD_ONLY') == '1':
+        record=dict(tag=tag,version=chosen,pending=[p.name for p in pending])
+        (output/'build.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
+        print(json.dumps(record),flush=True)
+        return
     if os.environ.get('GITHUB_ACTIONS') == 'true':
         subprocess.run(['git','config','user.name','github-actions[bot]'],check=True)
         subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'],check=True)

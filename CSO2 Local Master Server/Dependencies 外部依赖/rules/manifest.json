@@ -1,0 +1,32 @@
+{
+  "zombie": {
+    "original_elo_sha256": "bcdb1a382d4b41106ba51055d2cd153ac4bc08b106ac3bca84f5f57cff648f99",
+    "patched_elo_sha256": "3d01254e00af149f4840289f3d4d59ac6d9e822996ce815e105e3d817d92ae23",
+    "unchanged_other_prototypes": 77,
+    "selection_original_first_line": 4443,
+    "package_entry": {
+      "name": "cstrike/scripts/mod/zombie/mod_zombie.elo",
+      "package": "dffb4526b836d5128a68d193135c0140.pkg",
+      "offset": 1169,
+      "stored": 74816,
+      "size": 74802,
+      "encrypted": true,
+      "region": 0
+    }
+  },
+  "ghost": {
+    "original_elo_sha256": "ba94f36b240dc91b40a01dd13ad8ce241a67d1a04c424b35cac28070d383fffe",
+    "patched_elo_sha256": "ce45d0887b312ff724d359677b58cdff32a1a277da05528e084e80389dcf1eb7",
+    "unchanged_other_prototypes": 79,
+    "selection_original_first_line": 4439,
+    "package_entry": {
+      "name": "cstrike/scripts/mod/ghost/mod_ghost.elo",
+      "package": "ab59f58e3aa88ecb848e23cf8dd814ff.pkg",
+      "offset": 881,
+      "stored": 75088,
+      "size": 75074,
+      "encrypted": true,
+      "region": 0
+    }
+  }
+}

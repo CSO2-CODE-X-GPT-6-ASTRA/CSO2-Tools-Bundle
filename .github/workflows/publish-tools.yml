@@ -8,6 +8,7 @@ on:
       - '**/*.pyw'
       - 'CSO2 Bot Tool/1 - Shoot Through Data 射击穿透数据/**'
       - 'CSO2 Bot Tool/2 - Python Libs 依赖包/**'
+      - 'CSO2 Local Master Server/Dependencies 外部依赖/**'
       - '.github/workflows/publish-tools.yml'
       - '.github/scripts/publish_tools.py'
       - '.github/scripts/publish_bundle.py'
