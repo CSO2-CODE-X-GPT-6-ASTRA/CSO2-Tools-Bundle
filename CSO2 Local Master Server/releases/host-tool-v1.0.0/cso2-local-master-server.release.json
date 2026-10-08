@@ -3,13 +3,13 @@
   "product": "cso2-local-master-server",
   "repository_id": 1410625177,
   "version": "1.0.0",
-  "source_sha256": "0da50136f94269b33206a46e12d396d7de15ad1addc838a0b4126ee740645aa3",
+  "source_sha256": "32693dae9247d3fbb6da5a6e2c0dfab1f1d927729a1a89655546afa1e5efa8a3",
   "entry": "CSO2 Local Master Server.pyw",
-  "size": 337491,
-  "sha256": "6829bef096b7340ce02ba9df2fff6582b2c3e1cbd12dd21b0c77ce9c4818037e",
+  "size": 337720,
+  "sha256": "4118f8cc511d65120ffeb32bd7d1b72da93554210a45a9afc5574a027f81ab5e",
   "manual_archive": {
-    "asset": "CSO2 Local Master Server.7z",
-    "size": 7959551,
-    "sha256": "141a8c086e6b063809f9cb08662d0fa44d20960f143d6e94ff67d4312431c7f2"
+    "asset": "CSO2.Local.Master.Server.7z",
+    "size": 7959639,
+    "sha256": "e792d4ce87ce84a404294768dbf3f3f3d17a86ad9fe3f0d1b8af2a6e3724af85"
   }
 }

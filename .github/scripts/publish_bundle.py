@@ -160,7 +160,8 @@ def publish(root, output):
             # The full clean installation remains available as one Release 7Z.
             manifest.update(entry=entry, size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
             (source_folder/entry).write_bytes(raw)
-            manual_name = tool['path'].stem + '.7z'
+            # GitHub normalizes spaces in attachment names to dots.
+            manual_name = tool['path'].stem.replace(' ', '.') + '.7z'
             old = previous.get(product, {}); prior = old.get('manual_archive', {})
             if (old.get('sha256') == manifest['sha256'] and old.get('source_sha256') == tool['source']
                     and manual_name in assets

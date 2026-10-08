@@ -3329,6 +3329,8 @@ from urllib.parse import quote, urlsplit
 META = UPDATE_METADATA
 LIMIT = 8 * 1024 * 1024
 TITLE = 'CSO2 Local Master Server Update'
+# Public page only; actual PYW discovery uses repository ID, manifests and blobs.
+RELEASE_PAGE_FALLBACK = 'https://github.com/CSO2-CODE-X-GPT-6-ASTRA/CSO2-Tools-Bundle/releases/latest'
 
 
 def digest(path):
@@ -3674,7 +3676,8 @@ class ReleaseUpdater:
         self.root.after(30 * 60 * 1000, self.periodic)
 
     def open_release(self):
-        self.run(lambda: discover(self.target, page_only=True), 'page', True)
+        import webbrowser
+        webbrowser.open(trusted(self.info['page_url'] if self.info else RELEASE_PAGE_FALLBACK))
 
     def confirm_startup(self):
         if not self.state['closed'] and self.root.winfo_viewable():
