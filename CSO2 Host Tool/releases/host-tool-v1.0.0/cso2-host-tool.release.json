@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "product": "cso2-host-tool",
+  "repository_id": 1410625177,
+  "version": "1.0.0",
+  "source_sha256": "7a2d07798d6543d71dcea655c53b7e4f8854625709715b6eca8e76a658c25ef1",
+  "asset": "cso2-host-tool.pyw",
+  "size": 395320,
+  "sha256": "a833a3751336e4e8c575b4052659272644a23e62e992a81ef97230dccf8b18b4"
+}

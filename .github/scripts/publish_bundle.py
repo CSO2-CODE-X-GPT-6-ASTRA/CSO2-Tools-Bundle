@@ -95,7 +95,7 @@ def discover(root, repository_id):
         inventory = {n: dict(size=p.stat().st_size, sha256=digest(p)) for n, p in files.items()}
         inventory[product + '.pyw'] = dict(size=len(normalized), sha256=hashlib.sha256(normalized).hexdigest())
         compile(tree, str(path), 'exec')
-        tools[product] = dict(raw=raw, meta=meta, files=files, dirs=dirs, source=fingerprint(inventory))
+        tools[product] = dict(path=path, raw=raw, meta=meta, files=files, dirs=dirs, source=fingerprint(inventory))
     if not tools or len({t['meta']['UPDATE_TAG_PREFIX'] for t in tools.values()}) != 1:
         raise ValueError('Missing tools or inconsistent tag prefixes')
     return tools
@@ -114,9 +114,16 @@ def publish(root, output):
         if len(rows) < 100: break
     number, release = max(releases, key=lambda x: x[0]) if releases else ((0, 0, 0), None)
     assets = {a['name']: a for a in (release or {}).get('assets', [])}; previous = {}
+    for tool in tools.values():
+        source_manifest = tool['path'].parent/'releases'/((release or {}).get('tag_name', 'none'))/(tool['meta']['APP_ID']+'.release.json')
+        if source_manifest.is_file():
+            item=json.loads(source_manifest.read_text(encoding='utf-8')); previous[item['product']]=item
+    # Migration from the initial Release-hosted manifests.
     for asset in assets.values():
         if asset['name'].endswith('.release.json') and asset['size'] < 4*1024*1024:
-            item = json.loads(download_asset(asset)); previous[item['product']] = item
+            product=asset['name'][:-len('.release.json')]
+            if product not in previous:
+                item = json.loads(download_asset(asset)); previous[item['product']] = item
     changed = False
     for product, tool in tools.items():
         old = previous.get(product)
@@ -128,12 +135,18 @@ def publish(root, output):
         changed |= source != tool['source']
     requested = max(version(t['meta']['APP_VERSION']) for t in tools.values())
     chosen = max(number, requested)
-    if changed and chosen <= number: chosen = (number[0], number[1], number[2] + 1)
+    refresh_current = os.environ.get('TOOL_REFRESH_CURRENT') == '1'
+    if changed and chosen <= number and not refresh_current: chosen = (number[0], number[1], number[2] + 1)
     if chosen != number: release = None; assets = {}; previous = {}
     chosen = '.'.join(map(str, chosen)); tag = prefix + chosen
-    output.mkdir(parents=True, exist_ok=True); artifacts = {}
+    output.mkdir(parents=True, exist_ok=True); artifacts = {}; managed_paths=[]
     for product, tool in tools.items():
         meta = tool['meta']; entry = product + '.pyw'; raw = stamp(tool['raw'], chosen)
+        tool['path'].write_bytes(raw)
+        managed_paths.append(tool['path'])
+        source_folder = tool['path'].parent/'releases'/tag
+        source_folder.mkdir(parents=True,exist_ok=True)
+        managed_paths.append(source_folder)
         manifest = dict(schema=meta['UPDATE_PROTOCOL'], product=product, repository_id=meta['UPDATE_REPOSITORY_ID'],
                         version=chosen, source_sha256=tool['source'])
         if meta['UPDATE_PROTOCOL'] == 1:
@@ -154,7 +167,7 @@ def publish(root, output):
                     info.create_system=3; info.external_attr=0o100644<<16
                     z.writestr(info, raw if name == entry else tool['files'][name].read_bytes())
             manifest['archive'] = dict(asset=archive.name, size=archive.stat().st_size, sha256=digest(archive))
-            artifacts[archive.name] = archive
+            shutil.copyfile(archive,source_folder/archive.name)
             manual_name = product+'.7z'; old = previous.get(product, {})
             prior = old.get('manual_archive', {})
             if (old.get('revision') == manifest['revision'] and manual_name in assets
@@ -174,22 +187,38 @@ def publish(root, output):
                 manifest['manual_archive']=dict(asset=manual.name,size=manual.stat().st_size,sha256=digest(manual))
                 artifacts[manual.name]=manual
         metadata=output/(product+'.release.json')
-        metadata.write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8'); artifacts[metadata.name]=metadata
+        metadata.write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+        shutil.copyfile(metadata,source_folder/metadata.name)
     pending=[]
     for name,path in artifacts.items():
         old=assets.get(name)
         if old:
             if old.get('digest') != 'sha256:'+digest(path):
-                if not name.endswith('.release.json') or json.loads(download_asset(old)) != json.loads(path.read_bytes()):
+                if not refresh_current:
                     raise ValueError('Refusing to replace a published attachment: '+name)
+                pending.append(path)
         else: pending.append(path)
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        subprocess.run(['git','config','user.name','github-actions[bot]'],check=True)
+        subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'],check=True)
+        subprocess.run(['git','add','--',*map(str,managed_paths)],check=True)
+        if subprocess.run(['git','diff','--cached','--quiet']).returncode:
+            subprocess.run(['git','commit','-m','Update bundle source manifests '+chosen+' [skip ci]'],check=True)
+            subprocess.run(['git','push','origin','HEAD:'+os.environ.get('GITHUB_REF_NAME','main')],check=True)
     if not release:
         notes=output/'empty-notes.txt'; notes.write_text('',encoding='utf-8')
-        gh('release','create',tag,'--draft','--target',os.environ['GITHUB_SHA'],'--title','CSO2 Tools Bundle v'+chosen,'--notes-file',notes)
+        target=subprocess.run(['git','rev-parse','HEAD'],check=True,text=True,stdout=subprocess.PIPE).stdout.strip()
+        gh('release','create',tag,'--draft','--target',target,'--title','CSO2 Tools Bundle v'+chosen,'--notes-file',notes)
     pending.sort(key=lambda p:p.name.endswith('.release.json'))
     for path in pending:
-        gh('release','upload',tag,path); print('Uploaded '+path.name,flush=True)
+        args=['release','upload',tag,path]
+        if refresh_current: args.append('--clobber')
+        gh(*args); print('Uploaded '+path.name,flush=True)
     if not release or release.get('draft'): gh('release','edit',tag,'--draft=false')
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        for name in assets:
+            if name.endswith('.release.json') or name.endswith('.update.zip'):
+                gh('release','delete-asset',tag,name,'--yes')
     record=dict(tag=tag,version=chosen,added=[p.name for p in pending])
     (output/'publication.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
     print(json.dumps(record),flush=True)

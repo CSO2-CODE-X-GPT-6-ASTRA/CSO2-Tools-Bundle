@@ -6,8 +6,8 @@ on:
     paths:
       - '*.pyw'
       - '**/*.pyw'
-      - '1 - Shoot Through Data 射击穿透数据/**'
-      - '2 - Python Libs 依赖包/**'
+      - 'CSO2 Bot Tool/1 - Shoot Through Data 射击穿透数据/**'
+      - 'CSO2 Bot Tool/2 - Python Libs 依赖包/**'
       - '.github/workflows/publish-tools.yml'
       - '.github/scripts/publish_tools.py'
       - '.github/scripts/publish_bundle.py'
