@@ -50,7 +50,7 @@ Release packages exclude the original user's accounts, passwords, control tokens
 
 </details>
 
-<details>
+<details open>
 <summary><strong>中文</strong></summary>
 
 面向 Windows 的 **CSO2 修改器、外挂辅助与本地端工具合集**，使用 Python 编写。包含房主工具、BOT 辅助工具和本地主服务端三个组件，按需要分别使用。
