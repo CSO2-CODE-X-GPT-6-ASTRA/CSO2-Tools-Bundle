@@ -824,6 +824,662 @@ GHOST_FIELDS=((0x9f3fc0,'m_infoGhost',0x1290,4),
 GHOST_VISIBLE=struct.pack('<f3B',0.1,255,255,255)
 GHOST_SET_SIGNATURE=bytes.fromhex('558bec51894dfc8b45fcf30f104508f30f1180ac1200008b4dfc8a55108891b11200008b45fc8a4d0c8888b01200008b55fc8a45148882b21200008be55dc21000')
 
+HEROES_CODE=((6405856, 144, '33519a646f21bed5402761bb9d0dd6891179f4a07f88141a44ac0699c14bd081', (33, 58, 108, 127)), (6406208, 13, 'c57164f3758b6e6622b814704cb76ef1acd04a6d431e721aa48ca9c7438f7dc8', ()), (6407104, 256, 'ff4876693b06dd4dac1cf9357a3cd07490f9abda57126aefc8d6841bc1b6e653', (16, 51, 85, 91, 109, 127, 141, 172, 186, 198)), (6407360, 384, 'dbb2ce174e5f15b410757e95ff7d5cd4c9045e255cd05ff38d1f4f3923700c29', (9, 73, 119, 127, 188, 231, 257, 275, 309, 345)), (6407744, 592, '4a9fdb1f0a7b35905383afcd6423b9606f37ead61e989bf2c1e6cebae5fb07b9', (15, 46, 113, 127, 162, 178, 187, 193, 222, 235, 241, 259, 304, 354, 372, 384, 399, 424, 431, 457, 473, 495, 506, 561)), (6408336, 269, 'f50fa201839cd48d83bdd0176cbe0cdbe0a01c5f9f54cefba93af079bc6fb14f', (15, 81, 120, 157, 183, 234)), (6408608, 85, '629047895ce04f039b63e42d5464ced038321c7914866d9e404a286eb185d48a', (18, 32, 57, 70)), (6408704, 672, 'f1d2245ce1520b2f3b987442be1131956bb2cf4c757c54103ef577f630f92c89', (9, 55, 102, 157, 171, 206, 222, 231, 237, 266, 279, 285, 303, 370, 480, 487, 535, 542, 572, 588, 616, 627)), (6409456, 160, '345089b3ad553aa0edf53f20beaabe53c2fce0fcd43b5d150e70c39a605522c8', (1, 23, 32, 37, 60, 65, 88, 93, 116, 121, 134, 139)), (6413216, 98, 'f7d3794d160bd6728a251c0c647a36afc96b4ceba1baae3f034a601e44359d40', (18, 59)), (6413328, 150, '39c70f7207773181301900a88caaa69c3df0aab53eeab7f958060e077715d89a', (9, 89)), (6413648, 501, 'b0af23466468417303a708cbb273d0f3ddc85f841aacc309d77d4026b37def6b', (37, 163, 389)), (754416, 98, '962c03d806d155c17a6d94bdffd6f06caff74f62772e9c100118217bd5232968', (27, 63)), (6448752, 178, '1634a816e17a85090db9a2b86a488286586ef8fdb44972ad56a04baabe9e9f73', (43, 97)), (6539456, 282, '1647a89ad4ce98d9d9413e658e8e5ae93635f93d83aacf6c8abbf73c0b3846ce', (9, 57, 102, 107, 189)), (6372832, 340, '2ce4e741782202df65dc3c235c9f68a698c7e43a14a8f234d608d1950aaaca99', (9, 46, 51, 108, 115, 203, 210, 232, 241, 311)))
+
+# Heroes adapter: native server paths verified against the shipped server.dll.
+HEROES_UPGRADE_CODE=((5517488, 222, '2feab62e57bf4decf9b0e510f0be0a1a5ad1b2d49c2e8fb69ea69794cc12f5f6', (6, 149)), (5517712, 265, '3b024b87684aa28807d925239cf40aef285863692c57d1f5cc40526562048881', (6, 192)), (616976, 6, '7a59f004f8bd8c5ad012968d8e9bcba95d54a84254713d600522a21c099944e0', (1,)), (6412944, 47, 'ca70a57abbf88b6da32668b57d65d41fc5153ff1e18a54c03fec8b2447a461cd', ()), (581312, 77, 'a299da091c8a901e9786bbb991df6a0d302634bc85979f3b283963cb7bc3d89d', ()), (698320, 87, '7b37cbb3f43142e6be422c22474ac45030ff19555980c9a7b1ff2cf9ff7e4b35', ()), (860288, 50, '26e96c9ebdb591639825bc06ac3876a0150ef891b2c820aa0cc6fcb01a970062', ()), (698288, 7, '77f985978f92a713f60f849133828747b08eb10d3b8ef6c6a5d17d1d3deaf962', ()), (712624, 50, 'cbea5c2d6f3c9a82d0f29ed58de51d0d7c02a8c0ce4986eb0254c0596d86ed8c', ()))
+HEROES_STATES={0x8f3630:1,0x8f3654:2,0x8f366c:3,0x8f3618:4}
+HEROES_DAMAGE=('cso2mon_movezone_triggerdam','cso2mon_movezone_triggerdam_boss')
+
+
+def heroes_call(this,method,*args):
+    return b''.join(b'\x68'+struct.pack('<I',arg & 0xffffffff) for arg in reversed(args))+b'\xb9'+struct.pack('<I',this)+b'\xb8'+struct.pack('<I',method)+b'\xff\xd0'
+
+
+def heroes_phase_event(server,previous,current,wave):
+    # Match the native CreateEvent / SetInt / FireEvent call chain. EBX owns
+    # the event until FireEvent; the outer request preserves all registers.
+    code=bytearray(b'\x8b\x0d'+struct.pack('<I',server+0xc59050))
+    code+=b'\x6a\x00\x68'+struct.pack('<I',server+0x8f2d30)+b'\x8b\x01\xff\x50\x18\x89\xc3\x85\xdb\x0f\x84'
+    skip=len(code);code+=bytes(4)
+    for name,value in ((0x8f2d24,previous),(0x8f2d18,current),(0x8f2cb8,wave)):
+        code+=b'\x68'+struct.pack('<I',value)+b'\x68'+struct.pack('<I',server+name)+b'\x89\xd9\x8b\x03\xff\x50\x28'
+    code+=b'\x8b\x0d'+struct.pack('<I',server+0xc59050)+b'\x6a\x00\x53\x8b\x01\xff\x50\x1c'
+    struct.pack_into('<i',code,skip,len(code)-skip-4)
+    return bytes(code)
+
+
+def heroes_native_payload(remote,server,sample,guards,action,target=None):
+    rules=sample['rules'];phase=sample['phase'];wave=sample['wave']
+    def body(address):
+        if action=='kill':return heroes_call(server+0xc23340,server+0x63c8c0)
+        if action=='no_wait':
+            if phase not in (2,4):raise NotReady('当前没有准备/波间等待')
+            offset=0x18 if phase==2 else 0x20
+            return b'\xc7\x05'+struct.pack('<II',sample['fsm']+offset,0)
+        if action=='finish':
+            code=heroes_phase_event(server,phase,4,wave)
+            code+=heroes_call(rules,server+0x61deb0)  # Exit disables old spawn IDs; POST kills survivors.
+            code+=heroes_call(rules,server+0x61dba0,0)
+            # POST still owns revival, wave advance and final victory. Only
+            # its waiting interval is shortened; IN's failure timer is intact.
+            return code+b'\xa1'+struct.pack('<I',rules+0x464)+b'\xc7\x40\x20\0\0\0\0'
+        if action!='jump':raise ValueError('未知洛奇操作')
+        code=heroes_call(rules,server+0x61dd50)  # PRE removes IN event listener and disables old spawning.
+        code+=heroes_call(server+0xc23340,server+0x63c8c0)
+        code+=heroes_call(rules,server+0x61dba0,0)
+        # READY/POST exit can increment the wave. Compute the delta AFTER
+        # exit, on the game frame, and use the native network-dirty helper.
+        code+=b'\xb8'+struct.pack('<I',target)+b'\x2b\x05'+struct.pack('<I',rules+0x48c)
+        code+=b'\xa3'+struct.pack('<I',address+2048)
+        code+=heroes_call(rules+0x48c,server+0xb82f0,address+2048)
+        code+=heroes_phase_event(server,2,3,target)
+        return code+heroes_call(rules,server+0x61ddf0)
+    return player_action_stub(remote,guards,body,code_size=2048)+bytes(16)
+
+
+
+def is_tv_player(player):
+    return re.sub(r'[^a-z0-9]','',player.name.casefold()) in ('cso2tv','sourcetv','hltv')
+
+
+def heroes_upgrade_payload(remote,server,key,field,level,guards):
+    if field not in ('atk','hp'):raise ValueError('未知强化类型')
+    def body(_):
+        code=heroes_call(key.address,server+(0x5430b0 if field=='atk' else 0x543190),level)
+        if field=='hp':
+            # Native HP upgrades preserve missing health. A downward selection
+            # must not leave a live entity with negative HP and no death event.
+            code+=heroes_call(key.address,server+0xaa7b0)
+            patch=heroes_call(key.address,server+0xadfb0,1)
+            code+=b'\x83\xf8\x01\x7d'+bytes([len(patch)])+patch
+        return code
+    return player_action_stub(remote,guards,body,code_size=2048)
+
+
+HERO_MODELS=(('Evy · 01', 'models/player/mabi_evy/mabi_evy01.mdl'), ('Evy · 02', 'models/player/mabi_evy/mabi_evy02.mdl'), ('Hurk · 01', 'models/player/mabi_hurk/mabi_hurk01.mdl'), ('Hurk · 02', 'models/player/mabi_hurk/mabi_hurk02.mdl'), ('Kay · 01', 'models/player/mabi_kay/mabi_kay01.mdl'), ('Kay · 02', 'models/player/mabi_kay/mabi_kay02.mdl'), ('Lynn · 01', 'models/player/mabi_lynn/mabi_lynn01.mdl'))
+HERO_MODEL_CODE={'server.dll': ((6140992, 18, '00fe3ef33565d303c5493e4621f0cd6fa92b9eb63262ca3120ee2bec7e3ed075', (2,)), (5366640, 2616, '5f557bc9fb265b94180ad9b83f42f1a3855573f540055404136f979f846401be', (6, 87, 95, 186, 194, 280, 288, 377, 385, 415, 423, 497, 505, 561, 569, 609, 617, 653, 661, 686, 958, 966, 991, 999, 1034, 1042, 1067, 1075, 1636, 1644, 1675, 1683, 1725, 1733, 1822, 1830, 2099, 2236, 2373)), (4379920, 184, 'a2ea713a1ea6dff17c302754676189259a46b359e23602cd19e35192c68a3d72', (9, 37, 80, 95, 130)), (6605840, 222, '65ec6b1031b67b2e7d36675c94636e516b31abceb7776108e8a3bb47e9bd514c', (16, 28, 67, 82, 184, 190)), (4912864, 285, '66943cbeebff5d5e80972215d73af397e679a82fa06b0ea3499c6bf285355e10', (9, 32, 74, 80, 103, 114, 154, 163, 169, 185, 215, 220))), 'engine.dll': ((1522864, 80, 'bacd671052204e2333afc435e4aa3648df37f697b3d8012ebcd046ac7dd8e229', (12, 43, 62)), (1518848, 406, '8bb80fd106b9468449d507b079342683a44e6bf5325dddf7ab45bcf88c8945b2', (81, 87, 220, 225, 242, 247, 263, 275, 280, 315, 320, 343, 348, 359)), (1281776, 479, '23372891db0fa05b4b710ca1ea317ffaeb6e4e97bd86ce4dba73d855e7f34e8f', (19, 25, 335, 341)), (1000848, 27, '4a1a430415405799a87628f6bf0094f2062fd9914bad3abee07461e53ad435ad', ()), (996288, 96, '4f8ad6fe7fe9ab02e7207b46788d5f9fdeeebd38ce8d9a48d480b86e1c11c38f', (76,)))}
+
+def heroes_model_payload(remote,server,key,path,api,guards):
+    if path not in dict(HERO_MODELS).values():raise ValueError('模型不在已验证的 HERO 资源列表')
+    model=remote+0x810;result=remote+0x800
+    def body(_):
+        code=bytearray();skips=[]
+        def fail_if(op):
+            code.extend(op+b'\0\0\0\0');skips.append(len(code)-4)
+        # PrecacheModel is cdecl, while the engine/model and entity calls are thiscall.
+        code.extend(b'\x68'+struct.pack('<I',model)+b'\xb8'+struct.pack('<I',server+0x5db440)+b'\xff\xd0\x83\xc4\x04')
+        code.extend(b'\xa3'+struct.pack('<I',result)+b'\x85\xc0');fail_if(b'\x0f\x8e')
+        code.extend(heroes_call(api['model_this'],api['lookup'],model))
+        code.extend(b'\x3b\x05'+struct.pack('<I',result));fail_if(b'\x0f\x85')
+        code.extend(b'\x50\xb9'+struct.pack('<I',api['model_this'])+b'\xb8'+struct.pack('<I',api['get_model'])+b'\xff\xd0\x85\xc0')
+        fail_if(b'\x0f\x84')
+        code.extend(heroes_call(key.address,server+0x51e370,model))
+        code.extend(b'\x0f\xbf\x05'+struct.pack('<I',key.address+0x86))
+        code.extend(b'\x3b\x05'+struct.pack('<I',result));fail_if(b'\x0f\x85')
+        code.extend(b'\xc7\x05'+struct.pack('<II',result+4,1))
+        for at in skips:struct.pack_into('<i',code,at,len(code)-at-4)
+        return bytes(code)
+    return player_action_stub(remote,guards,body,code_size=0x800)+bytes(16)+path.encode('ascii')+b'\0'
+
+
+class HeroesControls:
+    """Own only Heroes requests and the two temporary temple cvars."""
+    def __init__(self,backend,emit):
+        self.b=backend;self.emit=emit;self.pending=None;self.saved=None;self.temple_job=None
+        self.protected=False;self.next_sample=0.;self.restore_error=''
+        self.auto=False;self.seconds=3.;self.due=None;self.no_wait=False;self.active_context=None
+        self.upgrades={};self.next_upgrade=0.;self.upgrade_rows=None;self.upgrade_error=''
+        self.model_jobs={};self.next_model=0.;self.model_watch=False;self.next_model_sample=0.
+    def select_models(self,path,keys,players):
+        if path not in dict(HERO_MODELS).values():raise ValueError('请选择列表中的 HERO 模型')
+        self.b.heroes_model_api(force=True)
+        present={p.key for p in players if p.team in (2,3) and not is_tv_player(p)}
+        keys=set(keys)&present
+        if not keys:raise NotReady('请先勾选要切换模型的玩家')
+        # Each player can have a different choice. A new choice replaces only
+        # that player's queued request; completed changes are not a lock.
+        for key in keys:self.model_jobs[key]=dict(path=path,retries=0)
+        self.active_context=(self.b.epoch,self.b.context)
+        self.emit('log',text=f'模型切换已排队：{len(keys)} 人；死亡玩家复活后应用')
+    def advance_models(self,players):
+        if not self.model_jobs or self.pending or time.monotonic()<self.next_model:return
+        b=self.b
+        if b.player_queue and b.player_queue.pending:return
+        self.next_model=time.monotonic()+.15
+        present={p.key:p for p in players if p.team in (2,3) and not is_tv_player(p)}
+        for key in list(self.model_jobs):
+            if key not in present:self.model_jobs.pop(key,None)
+        for key,job in sorted(self.model_jobs.items(),key=lambda row:row[0].index):
+            if not present[key].alive:continue
+            try:
+                sample=b.heroes_state()
+                if sample['ended']:return
+                api=b.heroes_model_api();guards=b.heroes_model_guards(sample,api,key)
+                b.submit_player_native(lambda remote:heroes_model_payload(remote,b.server,key,job['path'],api,guards))
+                self.pending=dict(action='model',key=key,model_job=job,epoch=b.epoch,context=b.context)
+                return
+            except PlayerUnavailable:continue
+            except Exception as ex:
+                reason=str(ex)
+                if job.get('reason')!=reason:self.emit('error',text=f'模型切换 #{key.index} 等待：'+reason);job['reason']=reason
+                return
+    def sample_models(self,players):
+        if not self.model_watch or time.monotonic()<self.next_model_sample:return
+        self.next_model_sample=time.monotonic()+1.
+        rows=[]
+        try:self.b.heroes_model_api()
+        except Exception as ex:self.emit('heroes_models',rows=[],reason=str(ex));return
+        for p in players:
+            if p.team not in (2,3) or is_tv_player(p):continue
+            try:index,path=self.b.heroes_model_current(p.key)
+            except (NotReady,OSError):path='';index=0
+            rows.append(dict(key=p.key,path=path,index=index,alive=p.alive,pending=p.key in self.model_jobs))
+        self.emit('heroes_models',rows=rows,reason='')
+
+    def flags(self):
+        self.emit('flags',heroes_auto=self.auto,heroes_no_wait=self.no_wait)
+    def configure_auto(self,enabled,seconds):
+        if enabled:
+            seconds=bounded_float(seconds,0,3600,'怪物死亡倒计时')
+            sample=self.b.heroes_state(verify=True)
+            if sample['ended']:raise NotReady('本局已结束')
+            self.seconds=max(.1,seconds);self.active_context=(self.b.epoch,self.b.context)
+        self.auto=bool(enabled);self.due=None;self.flags()
+        self.emit('log',text='怪物自动死亡：'+('开启，倒计时 '+str(seconds)+' 秒循环执行' if enabled else '关闭'))
+    def configure_wait(self,enabled):
+        if enabled:
+            self.b.heroes_state(verify=True);self.active_context=(self.b.epoch,self.b.context)
+        self.no_wait=bool(enabled);self.flags()
+    def upgrade_all(self,field,level,players):
+        if field not in ('atk','hp'):raise ValueError('未知强化类型')
+        table=self.b.heroes_enchants(force=True);level=bounded_int(level,0,20,'强化等级')
+        if level not in table['rows']:raise NotReady('当前对局没有该强化等级')
+        keys={p.key for p in players if p.team in (2,3) and not is_tv_player(p)}
+        if not keys:raise NotReady('当前没有参战玩家')
+        self.upgrades[field]=dict(level=level,keys=keys,done=0,failed=0)
+        self.active_context=(self.b.epoch,self.b.context)
+        self.emit('log',text=f'全体玩家强化已排队：{field} 等级 {level}，共 {len(keys)} 人；死亡玩家复活后补发')
+    def advance_upgrades(self,players):
+        if not self.upgrades or self.pending or time.monotonic()<self.next_upgrade:return
+        b=self.b
+        if b.player_queue and b.player_queue.pending:return
+        self.next_upgrade=time.monotonic()+.1
+        present={p.key:p for p in players if p.team in (2,3) and not is_tv_player(p)}
+        for field,job in list(self.upgrades.items()):
+            job['keys'].intersection_update(present)
+            for key in sorted(job['keys'],key=lambda k:k.index):
+                player=present[key]
+                if not player.alive or player.team not in (2,3):continue
+                try:
+                    sample=b.heroes_state()
+                    if sample['ended']:return
+                    table=b.heroes_enchants(force=True);row=table['rows'][job['level']]
+                    actual=b.validate(key)
+                    if actual.team not in (2,3) or is_tv_player(actual):job['keys'].discard(key);continue
+                    if struct.unpack('<h',b.mem.read(key.address+0x86,2))[0]<=0:continue
+                    guards=b.heroes_upgrade_guards(sample,table,key,row)
+                    b.submit_player_native(lambda remote:heroes_upgrade_payload(remote,b.server,key,field,job['level'],guards))
+                    self.pending=dict(action='upgrade',field=field,key=key,job=job,row=row,epoch=b.epoch,context=b.context)
+                    return
+                except PlayerUnavailable:continue
+                except NotReady as ex:
+                    # A native table/phase read can be transiently unstable
+                    # during spawn or round transition. Keep this player in
+                    # the batch and retry on the next game frame.
+                    reason=str(ex)
+                    if job.get('wait_reason')!=reason:
+                        job['wait_reason']=reason;self.emit('log',text='全体强化等待恢复：'+reason)
+                    return
+                except Exception as ex:
+                    job['keys'].discard(key);job['failed']+=1
+                    self.emit('error',text=f'全体强化 #{key.index} 未执行：{ex}')
+            if not job['keys']:
+                self.upgrades.pop(field,None)
+                self.emit('log',text=f'全体强化 {field} 完成：已确认 {job["done"]} 人，失败 {job["failed"]} 人')
+    def automate(self,sample):
+        if sample['ended']:
+            self.auto=False;self.no_wait=False;self.due=None;self.upgrades.clear();self.model_jobs.clear();self.flags();return
+        now=time.monotonic()
+        if not self.auto or sample['phase']!=3:self.due=None
+        elif self.due is None:self.due=now+self.seconds
+        if self.pending or self.b.player_queue and self.b.player_queue.pending:return
+        if self.no_wait and sample['phase'] in (2,4):
+            offset=0x18 if sample['phase']==2 else 0x20
+            if self.b.mem.i32(sample['fsm']+offset)!=0:self.native('no_wait',quiet=True)
+        elif self.auto and sample['phase']==3 and now>=self.due:
+            self.native('kill',quiet=True);self.due=None
+
+    def native(self,action,target=None,quiet=False):
+        if self.pending:raise NotReady('上一项洛奇操作正在等游戏处理')
+        b=self.b;sample=b.heroes_state(table=action=='jump',verify=not quiet)
+        if sample['ended']:raise NotReady('本局已结束，请等待下一局')
+        if sample['phase']==1:raise NotReady('等待洛奇对局开始')
+        if action=='finish' and sample['phase']==4:raise NotReady('当前波已经进入结束阶段')
+        if action=='jump':
+            target=bounded_int(target,1,len(sample['waves']),'目标波次')
+            if target not in sample['waves']:raise NotReady('地图没有加载该波次')
+        if b.player_queue and b.player_queue.pending:raise NotReady('上一项游戏操作尚未结束')
+        guards=b.heroes_guards(sample)
+        if action=='jump':
+            guards.extend(((b.server+0xc23360,sample['head']),(b.server+0xc23364,len(sample['waves']))))
+            node=sample['waves'][target];guards.extend(((node+0x10,target),(node+0x14,target)))
+        b.submit_player_native(lambda remote:heroes_native_payload(remote,b.server,sample,guards,action,target))
+        self.pending=dict(action=action,target=target,sample=sample,epoch=b.epoch,context=b.context,quiet=quiet)
+        if not quiet:self.emit('log',text='洛奇操作已排入游戏主线程，等待执行结果')
+    def protect(self,enabled):
+        if self.temple_job:raise NotReady('神殿保护切换尚未核对完成')
+        b=self.b
+        if enabled:
+            b.heroes_state(verify=True)
+            values=b.heroes_damage_values()
+            if self.saved is None:self.saved=dict(identity=(b.mem.pid,b.server),values=values,context=b.context,epoch=b.epoch)
+            self.temple_job=dict(enabled=True,deadline=time.monotonic()+8.,sent=False)
+        else:
+            self.protected=False
+            if self.saved:self.temple_job=dict(enabled=False,deadline=time.monotonic()+8.,sent=False)
+        self.advance_temple()
+    def advance_temple(self):
+        job=self.temple_job;b=self.b
+        if not job:return
+        if not b.mem or self.saved['identity'][0]!=b.mem.pid:
+            # A different process/module cannot own the old cvar objects.
+            self.saved=None;self.temple_job=None;self.protected=False;return
+        enabled=job['enabled'];desired=['0','0'] if enabled else self.saved['values']
+        try:
+            if b.server!=self.saved['identity'][1]:raise NotReady('等待原服务器模块恢复连接后还原神殿参数')
+            if enabled and (self.saved['epoch']!=b.epoch or self.saved['context']!=b.current_context()):
+                self.protected=False;job.update(enabled=False,sent=False,deadline=time.monotonic()+8.);return
+            values=b.heroes_damage_values()
+            # A restore must be queued even if the old value is still visible:
+            # a preceding enable command may not have reached the game yet.
+            if not job['sent']:
+                b.send('; '.join(name+' '+value for name,value in zip(HEROES_DAMAGE,desired)));job['sent']=True
+                return
+            if all(float(a)==float(z) for a,z in zip(values,desired)):
+                self.protected=enabled;self.temple_job=None;self.restore_error=''
+                if not enabled:self.saved=None
+                self.emit('log',text='神殿保护已开启（普通怪与 Boss 伤害均已读回为 0）' if enabled else '神殿保护已关闭，两项伤害参数已恢复原值')
+                return
+            if time.monotonic()>job['deadline']:raise NotReady('两项神殿伤害参数未在时限内达到目标值')
+        except Exception as ex:
+            message='神殿保护：'+str(ex)
+            if message!=self.restore_error:self.emit('error',text=message);self.restore_error=message
+            self.protected=False
+            # A failed enable can have changed one cvar. Roll back BOTH.
+            job.update(enabled=False,sent=False,deadline=time.monotonic()+8.)
+    def restore_temple(self):
+        self.protected=False
+        if self.saved:
+            self.temple_job=dict(enabled=False,deadline=time.monotonic()+8.,sent=False)
+            self.advance_temple()
+    def reset(self):
+        self.pending=None
+        self.auto=False;self.no_wait=False;self.due=None;self.active_context=None;self.upgrades.clear();self.model_jobs.clear();self.upgrade_rows=None;self.flags()
+        self.restore_temple()
+    def step(self,players=()):
+        b=self.b
+        if self.active_context is not None and self.active_context!=(b.epoch,b.current_context()):
+            self.auto=False;self.no_wait=False;self.due=None;self.upgrades.clear();self.model_jobs.clear();self.active_context=None;self.flags()
+        if self.pending:
+            job=self.pending
+            try:
+                if job['epoch']!=b.epoch or job['context']!=b.current_context():raise NotReady('对局已变化，洛奇操作取消')
+                if b.player_queue and b.player_queue.poll():
+                    self.pending=None;now=b.heroes_state();action=job['action']
+                    if action=='model':
+                        key=job['key'];index,path=b.heroes_model_current(key)
+                        if b.mem.u32(b.player_queue.request+0x804)!=1 or index<=0 or path!=job['model_job']['path']:
+                            raise NotReady('模型未达到目标：预缓存失败或原生角色规则覆盖了选择')
+                        if self.model_jobs.get(key) is job['model_job']:self.model_jobs.pop(key,None)
+                        self.next_model_sample=0.
+                        self.emit('log',text=f'模型已读回确认：#{key.index} → '+Path(path).stem)
+                    if action=='upgrade':
+                        key=job['key'];b.validate(key,False);row=job['row'];field=job['field']
+                        offset=0x26b4 if field=='atk' else 0x26b5
+                        value=struct.unpack('<f',b.mem.read(key.address+0x1be4,4))[0] if field=='atk' else b.mem.i32(key.address+0xf0)
+                        if b.mem.read(key.address+offset,1)[0]!=row['level'] or not math.isclose(value,row[field],rel_tol=1e-6):
+                            raise NotReady('强化调用已执行，但等级/实际属性未达到目标')
+                        job['job']['keys'].discard(key);job['job']['done']+=1
+                    if action=='no_wait' and now['fsm']==job['sample']['fsm'] and now['phase']==job['sample']['phase']:
+                        offset=0x18 if now['phase']==2 else 0x20
+                        if b.mem.i32(now['fsm']+offset)!=0:raise NotReady('等待时间未归零')
+                    if action=='jump' and (now['wave']!=job['target'] or now['phase']!=3 or now['ended']):
+                        raise NotReady('跳波调用已执行，但未读回目标攻击阶段')
+                    if action=='finish' and not (now['ended'] or now['wave']>job['sample']['wave'] or now['phase']==4):
+                        raise NotReady('结束调用已执行，但尚未观察到本波结束')
+                    text={'kill':'原生怪物死亡流程已执行；后续怪物仍按本波配置出生',
+                          'finish':'本波已进入结束/结算流程',
+                          'jump':'已读回第 '+str(job.get('target'))+' 波攻击阶段',
+                          'no_wait':'等待时间已归零','upgrade':'强化属性已读回','model':'模型切换已确认'}[action]
+                    if action not in ('upgrade','model') and not job.get('quiet'):self.emit('log',text=text)
+            except Exception as ex:
+                self.pending=None
+                if job['action']=='model':
+                    item=job['model_job'];item['retries']+=1
+                    try:dead=not b.validate(job['key'],False).alive
+                    except (NotReady,OSError):dead=False
+                    if not dead and item['retries']>=2 and self.model_jobs.get(job['key']) is item:self.model_jobs.pop(job['key'],None)
+                if job['action']=='upgrade':
+                    retry=False
+                    if job['epoch']==b.epoch and job['context']==b.context:
+                        try:
+                            player=b.validate(job['key'],False)
+                            retries=job['job'].setdefault('retries',{})
+                            retries[job['key']]=retries.get(job['key'],0)+1
+                            retry=not player.alive or retries[job['key']]<=3
+                        except (NotReady,OSError):pass
+                    if not retry:job['job']['keys'].discard(job['key']);job['job']['failed']+=1
+                elif job.get('quiet'):
+                    # A state transition between sampling and the game frame is
+                    # retried on the next sample, without accumulating requests.
+                    if job['epoch']!=b.epoch:self.auto=False;self.no_wait=False;self.flags()
+                self.emit('error',text='洛奇操作未确认：'+str(ex))
+        self.sample_models(players)
+        self.advance_models(players)
+        self.advance_upgrades(players)
+        if time.monotonic()<self.next_sample:return
+        self.next_sample=time.monotonic()+.4
+        self.advance_temple()
+        try:
+            sample=b.heroes_state()
+            if self.protected:
+                if self.saved['epoch']!=b.epoch or self.saved['context']!=b.context:self.reset()
+                elif any(float(v)!=0 for v in b.heroes_damage_values()):
+                    self.emit('error',text='神殿伤害参数被外部更改，保护未保持，正在恢复原值');self.reset()
+            phase={1:'等待开始',2:'准备',3:'攻击',4:'结束'}[sample['phase']]
+            text=f'第 {sample["wave"]} 波 · '+('本局结束' if sample['ended'] else phase)+f' · 神殿生命 {sample["health"]} · 本波剩余 {sample["remaining"]}'
+            self.automate(sample)
+            if self.auto:text+=' · 自动清怪 '+(f'{max(0.,self.due-time.monotonic()):.1f} 秒' if self.due else '等待攻击/执行结果')
+            if self.upgrades:text+=' · 等待强化 '+str(sum(len(j['keys']) for j in self.upgrades.values()))+' 人次'
+            self.state_error=''
+            self.emit('heroes_state',text=text,protected=self.protected)
+            try:
+                table=b.heroes_enchants();rows=[(k,r['atk'],r['hp']) for k,r in sorted(table['rows'].items())]
+                if rows!=self.upgrade_rows:self.upgrade_rows=rows;self.emit('heroes_levels',rows=rows)
+                self.upgrade_error=''
+            except Exception as ex:
+                reason=str(ex)
+                self.upgrade_rows=None
+                if reason!=self.upgrade_error:self.emit('heroes_levels',rows=[],reason=reason);self.upgrade_error=reason
+        except Exception as ex:
+            # Same-session reads can fail during a native phase transition.
+            # Retain requested automation and unfinished upgrades; every retry
+            # validates mode, context, entity identity and native guards again.
+            self.due=None
+            if self.protected:self.restore_temple()
+            reason=str(ex)
+            self.emit('heroes_state',text='洛奇功能暂不可用：'+reason,protected=False)
+            if reason!=getattr(self,'state_error',''):
+                self.emit('log',text='洛奇功能不可用原因：'+reason)
+            self.state_error=reason
+    def close(self):
+        self.reset()
+        # Queue completion alone is not success: allow a bounded read-back
+        # window before the existing connection closes.
+        until=time.monotonic()+1.5
+        while self.temple_job and time.monotonic()<until:
+            self.advance_temple()
+            if self.temple_job:time.sleep(.05)
+        if self.temple_job:self.emit('error',text='关闭时未确认神殿参数恢复；原值：'+repr(self.saved['values']))
+
+
+COMBAT_DAMAGE_MANIFEST=(6511750, 2306, '2360b463db48611c68a3246cd122e60e9f86aea93e2ce70227ea9959180647c0', (9, 91, 131, 168, 210, 277, 357, 433, 440, 470, 498, 522, 578, 586, 593, 619, 647, 667, 682, 737, 760, 769, 775, 809, 830, 854, 882, 927, 943, 957, 969, 1008, 1071, 1145, 1150, 1230, 1246, 1286, 1337, 1377, 1499, 1507, 1725, 1878, 1934, 1975, 2216, 2235))
+# The common monster damage entry runs after weapon/hitgroup multipliers.
+COMBAT_ENTRY=0x635c80
+COMBAT_PREFIX=bytes.fromhex('558bec83e4f8')
+COMBAT_TARGET_CHECKS=((0x630164,bytes.fromhex('8b8ee00600008bc1c1e80fa8010f8580010000c1e907f6c1010f8574010000')),
+    (0x633f38,bytes.fromhex('8b8ee00600008bc1c1e80fa801756ac1e907f6c1017562')),
+    (0x638533,bytes.fromhex('8b8ee00600008bc1c1e80fa80175dac1e907f6c10175d2')))
+
+def heroes_fixed_damage(value):
+    number=bounded_int(value,1,2000000000,'自定义伤害')
+    return struct.unpack('<f',struct.pack('<f',number))[0]
+
+def combat_damage_code(remote,server,engine):
+    """Reentrant thiscall wrapper; the caller's const damage-info stays untouched."""
+    data=remote+0x800;trampoline=remote+0x600;code=bytearray();branches=[]
+    def emit(value):code.extend(bytes.fromhex(value))
+    def imm(value):code.extend(struct.pack('<I',value))
+    def skip(op):
+        emit(op);branches.append(len(code));code.extend(bytes(4))
+    emit('558bec9c60833d');imm(data+4);emit('01');skip('0f85')
+    emit('a1');imm(server+0xc5f590);emit('3b05');imm(data+12);skip('0f85')
+    emit('85c0');skip('0f84')
+    emit('8138');imm(server+0x8f3134);skip('0f85')
+    emit('833d');imm(engine+9249476);emit('06');skip('0f85')
+    emit('a1');imm(engine+0x8d21a0);emit('3b05');imm(data+16);skip('0f85')
+    emit('83b9f400000000');skip('0f8e')
+    emit('8b75088b463085c0');skip('0f8e')
+    emit('3d0000807f');skip('0f83') # Ignore zero/healing/non-finite events.
+    emit('8b46280fb7d083fa01');skip('0f82')
+    emit('83fa40');skip('0f87')
+    emit('c1e20481c2');imm(server+0xa5fa44)
+    emit('c1e810394204');skip('0f85')
+    emit('8b1285d2');skip('0f84')
+    emit('813a');imm(server+0x8b7100);skip('0f85')
+    emit('0fb6820102000083e80283f801');skip('0f87')
+    # A raw, read-only shadow of CTakeDamageInfo (0x84 bytes). Its embedded
+    # string is borrowed for this call only and must not be destructed.
+    emit('81ec8400000089e7b921000000fcf3a5a1');imm(data+8)
+    emit('894424308b4df489e050b8');imm(trampoline);emit('ffd08945f8')
+    emit('8d65dc619dc9c20400')
+    passthrough=len(code);emit('619dc9e9');imm((trampoline-(remote+len(code)+4))&0xffffffff)
+    for at in branches:struct.pack_into('<i',code,at,passthrough-at-4)
+    if len(code)>=0x600:raise ValueError('伤害回调超过预留空间')
+    code.extend(bytes(0x600-len(code)));code+=COMBAT_PREFIX+b'\xe9'+struct.pack('<I',(server+COMBAT_ENTRY+6-(trampoline+11))&0xffffffff)
+    return bytes(code)
+
+class CombatDamageHook:
+    """Install once on GameFrame. Disabled pages remain valid until game exit."""
+    def __init__(self,backend):
+        self.b=backend;self.m=backend.mem;self.k=self.m.k;self.handle=None;self.remote=0;self.pending=False;self.installed=False;self.protection=None
+        self.target=backend.server+COMBAT_ENTRY;self.desired=None;self.enabled=False;self.identity=(backend.epoch,backend.context)
+        for name,ret,args in (
+            ('VirtualAllocEx',C.c_void_p,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD,W.DWORD]),
+            ('VirtualProtectEx',W.BOOL,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD,C.POINTER(W.DWORD)]),
+            ('FlushInstructionCache',W.BOOL,[W.HANDLE,C.c_void_p,C.c_size_t])):
+            fn=getattr(self.k,name);fn.restype=ret;fn.argtypes=args
+        self.handle=self.k.OpenProcess(0x0438,False,self.m.pid)
+        if not self.handle:raise C.WinError(C.get_last_error())
+        try:
+            entry=self.m.read(self.target,6)
+            if entry!=COMBAT_PREFIX:
+                self.remote=self.existing(backend)
+                if not self.remote:raise NotReady('怪物受击入口由其他修改占用')
+                if self.m.u32(self.remote+0x804):raise NotReady('另一房主工具正在使用自定义伤害')
+                self.installed=True
+            else:
+                self.remote=self.k.VirtualAllocEx(self.handle,None,4096,0x3000,0x40)
+                if not self.remote or self.remote>=0xffff0000:raise OSError('无法分配伤害回调')
+                self.m.write(self.remote,combat_damage_code(self.remote,backend.server,backend.engine))
+                self.m.write(self.remote+0x800,b'CDM1'+bytes(16)+struct.pack('<III',backend.server,backend.engine,self.target))
+                if not self.k.FlushInstructionCache(self.handle,self.remote,0x800):raise C.WinError(C.get_last_error())
+        except Exception:
+            if self.handle:self.k.CloseHandle(self.handle);self.handle=None
+            raise
+    @staticmethod
+    def existing(b):
+        entry=b.mem.read(b.server+COMBAT_ENTRY,6)
+        if entry[0]!=0xe9 or entry[5]!=0x90:return 0
+        remote=(b.server+COMBAT_ENTRY+5+struct.unpack_from('<i',entry,1)[0])&0xffffffff
+        if not 0x10000<=remote<0xfffe0000:return 0
+        try:
+            if b.mem.read(remote+0x800,4)!=b'CDM1':return 0
+            if b.mem.read(remote+0x814,12)!=struct.pack('<III',b.server,b.engine,b.server+COMBAT_ENTRY):return 0
+            code=combat_damage_code(remote,b.server,b.engine)
+            return remote if b.mem.read(remote,len(code))==code else 0
+        except (OSError,NotReady):return 0
+    def configure(self,value):
+        self.desired=value
+        if value is None:self.disable();return
+        self.identity=(self.b.epoch,self.b.context)
+    def disable(self):
+        self.desired=None
+        if self.remote:self.m.write(self.remote+0x804,bytes(4))
+        self.enabled=False
+    def restore_protection(self):
+        if self.protection is None:return
+        old=W.DWORD()
+        if not self.k.VirtualProtectEx(self.handle,self.target,6,self.protection,C.byref(old)):raise C.WinError(C.get_last_error())
+        self.protection=None
+    def step(self):
+        b=self.b
+        if self.pending:
+            q=b.player_queue
+            if q is None:raise NotReady('伤害安装队列已取消')
+            try:
+                if not q.poll():return False
+            except Exception:
+                if not q.pending:self.pending=False;self.restore_protection()
+                raise
+            self.pending=False
+            self.restore_protection()
+            if not self.k.FlushInstructionCache(self.handle,self.target,6):raise C.WinError(C.get_last_error())
+            if self.m.read(self.target,6)!=self.patch:raise NotReady('伤害回调未由游戏帧安装')
+            self.installed=True
+        if self.desired is None:return False
+        if self.identity!=(b.epoch,b.current_context()):self.disable();return False
+        sample=b.heroes_state()
+        if sample['ended']:self.disable();return False
+        if not self.installed:
+            if b.player_queue and b.player_queue.pending:return False
+            expected=self.m.read(self.target,8)
+            if expected[:6]!=COMBAT_PREFIX:raise NotReady('怪物受击入口已变化')
+            self.patch=b'\xe9'+struct.pack('<I',(self.remote-self.target-5)&0xffffffff)+b'\x90'
+            guards=b.heroes_guards(sample)+[(self.target,struct.unpack_from('<I',expected)[0]),(self.target+4,struct.unpack_from('<I',expected,4)[0])]
+            body=b'\xc7\x05'+struct.pack('<II',self.target,struct.unpack_from('<I',self.patch)[0])+b'\x66\xc7\x05'+struct.pack('<IH',self.target+4,struct.unpack_from('<H',self.patch,4)[0])
+            old=W.DWORD()
+            if not self.k.VirtualProtectEx(self.handle,self.target,6,0x40,C.byref(old)):raise C.WinError(C.get_last_error())
+            self.protection=old.value
+            try:b.submit_player_native(lambda remote:player_action_stub(remote,guards,lambda _:body));self.pending=True
+            except Exception:self.restore_protection();raise
+            return False
+        if self.enabled and self.m.read(self.remote+0x808,4)==struct.pack('<f',self.desired):return True
+        self.m.write(self.remote+0x804,bytes(4))
+        self.m.write(self.remote+0x808,struct.pack('<fII',self.desired,sample['rules'],self.m.u32(b.engine+0x8d21a0)))
+        self.m.write(self.remote+0x804,struct.pack('<I',1))
+        self.enabled=True;return True
+    def close(self):
+        try:
+            self.disable()
+            # A queued patch must finish/cancel before restoring page protection.
+            try:
+                if self.pending and self.b.player_queue:
+                    until=time.monotonic()+2.2
+                    while time.monotonic()<until:
+                        if self.b.player_queue.poll():self.pending=False;break
+                        time.sleep(.02)
+            finally:
+                if self.pending and self.b.player_queue and not self.b.player_queue.pending:self.pending=False
+                if not self.pending:self.restore_protection()
+        finally:
+            if self.handle:self.k.CloseHandle(self.handle);self.handle=None
+        # Never free a trampoline while a native call can still return through it.
+
+class HeroesCombatControls:
+    def __init__(self,b,emit):
+        self.b=b;self.emit=emit;self.hook=None;self.no_attack=False;self.saved={};self.next_sample=0.;self.identity=None;self.errors={}
+    def flags(self):
+        self.emit('flags',heroes_custom_damage=bool(self.hook and self.hook.enabled),heroes_no_attack=self.no_attack)
+    def damage(self,enabled,value):
+        if enabled:
+            value=heroes_fixed_damage(value);self.b.verify_combat_damage()
+            if self.hook is None:self.hook=CombatDamageHook(self.b)
+            self.hook.configure(value);self.identity=(self.b.epoch,self.b.context)
+            self.emit('log',text=f'自定义伤害已提交，实际单次伤害值 {value:.0f}；等待游戏帧安装')
+        elif self.hook:
+            self.hook.disable();self.emit('log',text='自定义伤害已关闭，恢复原生伤害')
+        self.flags()
+    def protect(self,enabled,players):
+        if enabled:
+            self.b.verify_combat_targets();self.no_attack=True;self.identity=(self.b.epoch,self.b.context);self.next_sample=0.
+            try:self.apply_targets(players)
+            except Exception:
+                self.no_attack=False
+                try:self.restore_targets()
+                finally:self.flags()
+                raise
+        else:
+            self.no_attack=False;self.restore_targets()
+        self.flags();self.emit('log',text='怪物不攻击玩家：'+('已开启' if enabled else '已关闭'))
+    def apply_targets(self,players):
+        b=self.b
+        if b.current_context()!=b.context:raise NotReady('对局已变化')
+        valid={p.key for p in players};self.saved={k:v for k,v in self.saved.items() if k in valid}
+        eligible={p.key for p in players if can_set_player_values(p)}
+        self.restore_targets(set(self.saved)-eligible)
+        for key in eligible:
+            p=b.validate(key)
+            if not can_set_player_values(p):continue
+            b.network_target(key.address,key.index)
+            at=key.address+0x6e0;before=b.mem.read(at,1)[0]
+            if key not in self.saved:self.saved[key]=not bool(before&0x80)
+            if not before&0x80:
+                # One byte, preserving all unrelated bits and the upper bytes.
+                self.saved[key]=True;b.mem.write(at,bytes([before|0x80]));b.dirty(key.address,key.index)
+    def restore_targets(self,keys=None):
+        b=self.b;errors=[]
+        for key in list(self.saved) if keys is None else list(keys):
+            if key not in self.saved:continue
+            if key.epoch!=b.epoch or key.map_name!=b.map_name:self.saved.pop(key,None);continue
+            try:
+                b.validate(key,False)
+                if self.saved[key]:
+                    at=key.address+0x6e0;before=b.mem.read(at,1)[0]
+                    if before&0x80:b.mem.write(at,bytes([before&~0x80]));b.dirty(key.address,key.index)
+                self.saved.pop(key,None)
+            except PlayerUnavailable:self.saved.pop(key,None)
+            except Exception as ex:errors.append(str(ex))
+        if errors:raise NotReady('怪物目标标志尚待恢复：'+errors[0])
+    def step(self,players):
+        try:
+            if self.identity and self.identity!=(self.b.epoch,self.b.current_context()):self.reset()
+        except Exception:
+            self.reset();return
+        due=time.monotonic()>=self.next_sample
+        if due:self.next_sample=time.monotonic()+.4
+        try:
+            if self.hook and (self.hook.pending or (due and self.hook.desired is not None)):
+                was=self.hook.enabled
+                if self.hook.step() and not was:
+                    self.emit('log',text=f'所有玩家自定义伤害已启用：{self.hook.desired:.0f}')
+                    self.flags()
+            self.errors.pop('damage',None)
+        except Exception as ex:
+            try:self.hook.disable()
+            except Exception:pass
+            self.report_error('damage',ex)
+        if not due:return
+        try:
+            if self.no_attack:
+                self.b.heroes_state();self.apply_targets(players)
+            elif self.saved:self.restore_targets()
+            self.errors.pop('target',None)
+        except Exception as ex:
+            self.no_attack=False
+            self.report_error('target',ex)
+    def report_error(self,feature,ex):
+        reason=str(ex)
+        if reason!=self.errors.get(feature):self.emit('error',text=('自定义伤害：' if feature=='damage' else '怪物停攻：')+reason)
+        self.errors[feature]=reason;self.flags()
+    def reset(self):
+        self.no_attack=False;self.identity=None
+        if self.hook:
+            try:self.hook.disable()
+            except Exception as ex:self.emit('error',text='伤害回调关闭：'+str(ex))
+        try:self.restore_targets()
+        except Exception as ex:self.emit('error',text=str(ex))
+        self.flags()
+    def close(self):
+        self.reset()
+        if self.hook:
+            try:self.hook.close()
+            except Exception as ex:self.emit('error',text='伤害回调清理：'+str(ex))
+            self.hook=None
+
+
+
 class Backend:
     def __init__(self):
         self.mem=None;self.queue=None;self.mods={};self.server=0;self.epoch=0;self.map_name='';self.local_index=0;self.context=None;self.mutation_pending=None
@@ -898,6 +1554,183 @@ class Backend:
         if not self.local_connection():raise NotReady('当前连接未确认为本地房主')
     def check_fields(self,names):
         field_check(self.mem,self.server,[item for item in FIELDS if item[1] in names])
+    def verify_heroes_paths(self):
+        m=self.mem;s=self.server;delta=s-0x10000000
+        for rva,size,digest,relocs in HEROES_CODE:
+            data=bytearray(m.read(s+rva,size))
+            for offset in relocs:struct.pack_into('<I',data,offset,(struct.unpack_from('<I',data,offset)[0]-delta)&0xffffffff)
+            if hashlib.sha256(data).hexdigest()!=digest:raise NotReady(f'洛奇原生调用路径版本不符：{rva:#x}')
+        # SendPropInt (server+0x367e30) stores the name at +0x30 and
+        # the entity field offset at +0x48. These are NOT datamap entries.
+        field_check(m,s,[(0xcb5528+0x30,'m_nCurHealth',0x488,0x18),
+                         (0xcb5578+0x30,'m_nCurrentPhaseCount',0x48c,0x18),
+                         (0xcb55c8+0x30,'m_nNeedMonsterCount',0x490,0x18)])
+    def heroes_state(self,table=False,verify=False):
+        self.require_local();m=self.mem;s=self.server
+        rules=m.u32(s+0xc5f590)
+        if not rules or rules!=m.u32(s+0xc5907c) or m.u32(rules)!=s+0x8f3134:
+            raise NotReady('此项仅适用于本地房主的洛奇英雄传模式')
+        identity=(self.epoch,s,rules)
+        if verify or getattr(self,'heroes_verified',None)!=identity:
+            self.verify_heroes_paths();self.heroes_verified=identity
+        fsm=m.u32(rules+0x464);vt=m.u32(fsm);phase=HEROES_STATES.get(vt-s)
+        if phase is None or m.u32(fsm+4)!=rules:raise NotReady('洛奇波次正在切换')
+        ended=m.read(rules+0x480,1)[0]
+        health,wave,remaining=struct.unpack('<3i',m.read(rules+0x488,12))
+        if ended not in (0,1) or not 0<=wave<=31 or not 0<=health<=255 or not -8192<=remaining<=1000000:
+            raise NotReady('洛奇模式状态尚未就绪')
+        result=dict(rules=rules,fsm=fsm,vt=vt,phase=phase,ended=bool(ended),health=health,wave=wave,remaining=remaining)
+        if table:
+            head=m.u32(s+0xc23360);count=m.u32(s+0xc23364)
+            if not head or not 1<=count<=31:raise NotReady('地图波次表未加载或超出当前网络格式')
+            todo=[m.u32(head+4)];waves={};seen=set()
+            while todo:
+                node=todo.pop()
+                if node==head:continue
+                if not node or node in seen or len(seen)>=count:raise NotReady('地图波次树正在变化')
+                seen.add(node);raw=m.read(node,0x30)
+                left,_,right=struct.unpack_from('<3I',raw);key,value=struct.unpack_from('<2i',raw,0x10)
+                if raw[0xd] or key in waves or key!=value:raise NotReady('地图波次资源未确认')
+                waves[key]=node;todo.extend((left,right))
+            if set(waves)!=set(range(1,count+1)) or head!=m.u32(s+0xc23360) or count!=m.u32(s+0xc23364):
+                raise NotReady('地图波次资源不连续或正在加载')
+            result.update(head=head,waves=waves)
+        if rules!=m.u32(s+0xc5f590) or fsm!=m.u32(rules+0x464) or vt!=m.u32(fsm):raise NotReady('洛奇波次正在切换')
+        return result
+    def heroes_guards(self,sample):
+        s=self.server;m=self.mem;rules=sample['rules'];fsm=sample['fsm']
+        guards=[(s+0xc5f590,rules),(s+0xc5907c,rules),(rules,s+0x8f3134),
+                (rules+0x464,fsm),(fsm,sample['vt']),(fsm+4,rules),(rules+0x48c,sample['wave']),
+                (rules+0x480,m.u32(rules+0x480)),(self.engine+9249476,6),
+                (self.engine+0x8d21a0,m.u32(self.engine+0x8d21a0))]
+        if self.current_context()!=self.context:raise NotReady('对局正在切换')
+        event=m.u32(s+0xc59050)
+        if not event:raise NotReady('模式事件系统尚未就绪')
+        guards.append((s+0xc59050,event));return guards
+    def heroes_enchants(self,force=False):
+        sample=self.heroes_state();m=self.mem;s=self.server;rules=sample['rules']
+        identity=(self.epoch,s,rules)
+        if force or getattr(self,'heroes_upgrade_verified',None)!=identity:
+            delta=s-0x10000000
+            for rva,size,digest,relocs in HEROES_UPGRADE_CODE:
+                data=bytearray(m.read(s+rva,size))
+                for off in relocs:struct.pack_into('<I',data,off,(struct.unpack_from('<I',data,off)[0]-delta)&0xffffffff)
+                if hashlib.sha256(data).hexdigest()!=digest:raise NotReady(f'玩家强化原生路径版本不符：{rva:#x}')
+            if m.u32(s+0x8f3134+0x49c)!=s+0x61da90:raise NotReady('强化表查询接口不匹配')
+            self.heroes_upgrade_verified=identity
+        head=m.u32(rules+0x478);count=m.u32(rules+0x47c);stamp=identity+(head,count)
+        if not head or not 1<=count<=21:raise NotReady('本局强化配置表尚未加载')
+        cache=getattr(self,'heroes_enchant_cache',None)
+        if not force and cache and cache['stamp']==stamp and time.monotonic()<cache['expires']:return cache
+        todo=[m.u32(head+4)];rows={};seen=set()
+        while todo:
+            node=todo.pop()
+            if node==head:continue
+            if not node or node in seen or len(seen)>=count:raise NotReady('强化配置树正在变化')
+            seen.add(node);raw=m.read(node,0x28)
+            left,_,right=struct.unpack_from('<3I',raw);key,level,atk,hp,atk_cost,hp_cost=struct.unpack_from('<iifiii',raw,0x10)
+            if raw[0xd] or key!=level or key in rows or not 0<=key<=20 or not math.isfinite(atk) or not 0<atk<=10000 or not 1<=hp<=100000000:
+                raise NotReady('强化配置内容未确认')
+            rows[key]=dict(node=node,level=level,atk=atk,hp=hp,raw=raw[0x10:0x28]);todo.extend((left,right))
+        if len(rows)!=count or head!=m.u32(rules+0x478) or count!=m.u32(rules+0x47c):raise NotReady('强化配置表正在加载')
+        self.heroes_enchant_cache=dict(stamp=stamp,expires=time.monotonic()+2.,head=head,count=count,rows=rows)
+        return self.heroes_enchant_cache
+    def heroes_upgrade_guards(self,sample,table,key,row):
+        m=self.mem;p=key.address;s=self.server;rules=sample['rules'];vt=m.u32(p)
+        guards=self.heroes_guards(sample)+self.action_guards(key)
+        guards.extend(((rules+0x478,table['head']),(rules+0x47c,table['count']),
+                       (s+0x8f3134+0x49c,s+0x61da90),(p,vt)))
+        for offset in range(0,len(row['raw']),4):guards.append((row['node']+0x10+offset,struct.unpack_from('<I',row['raw'],offset)[0]))
+        # Check on the game frame as well: do not upgrade a corpse, spectator,
+        # replaced slot or model that vanished after the roster sample.
+        for offset in (0xf8,0x200,0x84):
+            value=m.u32(p+offset)
+            if offset==0xf8 and value&0xff:raise PlayerUnavailable('玩家刚刚死亡，复活后再强化')
+            if offset==0x200 and (value>>8)&0xff not in (2,3):raise PlayerUnavailable('玩家刚刚离开参战阵营')
+            guards.append((p+offset,value))
+        if m.i32(p+0xf4)<=0:raise PlayerUnavailable('等待玩家存活后强化')
+        for offset in (0x23c,0x248,0x250):
+            method=m.u32(vt+offset)
+            if not s<=method<s+0x750000:raise NotReady('玩家属性虚函数不属于当前服务端')
+            guards.append((vt+offset,method))
+        return guards
+    def heroes_model_api(self,force=False):
+        self.heroes_state();m=self.mem;s=self.server;e=self.engine
+        identity=(self.epoch,s,e)
+        if force or getattr(self,'model_verified',None)!=identity:
+            for name,items in HERO_MODEL_CODE.items():
+                base=s if name=='server.dll' else e;delta=base-0x10000000
+                for rva,size,digest,relocs in items:
+                    data=bytearray(m.read(base+rva,size))
+                    for off in relocs:struct.pack_into('<I',data,off,(struct.unpack_from('<I',data,off)[0]-delta)&0xffffffff)
+                    if hashlib.sha256(data).hexdigest()!=digest:raise NotReady(f'人物模型原生路径版本不符：{name} {rva:#x}')
+            field_check(m,s,[(0x9bff78,'m_nModelIndex',0x86,4)])
+            self.model_verified=identity
+        engine_this=m.u32(s+0xc59074);model_this=m.u32(s+0xc58fdc)
+        if not engine_this or not model_this:raise NotReady('模型加载接口尚未就绪')
+        ev=m.u32(engine_this);mv=m.u32(model_this)
+        if ev!=e+0x5edd74 or mv!=e+0x5de7fc:raise NotReady('模型引擎接口不匹配')
+        for address,wanted in ((ev+0x14,e+0x173cb0),(mv+4,e+0xf4590),(mv+8,e+0xf33c0)):
+            if m.u32(address)!=wanted:raise NotReady('模型接口方法发生变化')
+        return dict(engine_this=engine_this,model_this=model_this,engine_vt=ev,model_vt=mv,
+                    lookup=e+0xf33c0,get_model=e+0xf4590)
+    def heroes_model_current(self,key):
+        self.validate(key,False);m=self.mem
+        # Native UTIL_SetModel assigns this pooled model-path string at +0x214.
+        index=struct.unpack('<h',m.read(key.address+0x86,2))[0]
+        pointer=m.u32(key.address+0x214)
+        path=m.string(pointer,192).replace('\\','/').casefold() if pointer else ''
+        self.validate(key,False)
+        return index,path
+    def heroes_model_guards(self,sample,api,key):
+        self.validate(key);m=self.mem;s=self.server;e=self.engine;p=key.address;vt=m.u32(p)
+        if vt!=s+0x8b7100 or m.u32(vt+0x6c)!=s+0x51e370:raise NotReady('该玩家的模型替换方法尚未确认')
+        guards=self.heroes_guards(sample)+self.action_guards(key)
+        guards.extend(((p,vt),(vt+0x6c,s+0x51e370),(s+0xc59074,api['engine_this']),
+                       (s+0xc58fdc,api['model_this']),(api['engine_this'],api['engine_vt']),
+                       (api['model_this'],api['model_vt']),(api['engine_vt']+0x14,e+0x173cb0),
+                       (api['model_vt']+4,api['get_model']),(api['model_vt']+8,api['lookup'])))
+        for offset in (0xf8,0x200):
+            value=m.u32(p+offset)
+            if offset==0xf8 and value&255:raise PlayerUnavailable('死亡玩家将在复活后切换模型')
+            if offset==0x200 and (value>>8)&255 not in (2,3):raise PlayerUnavailable('玩家已转为观战')
+            guards.append((p+offset,value))
+        if m.i32(p+0xf4)<=0:raise PlayerUnavailable('等待玩家复活')
+        return guards
+
+    def verify_combat_damage(self):
+        self.heroes_state();m=self.mem;s=self.server
+        entry=m.read(s+COMBAT_ENTRY,6);identity=(self.epoch,s,self.engine,entry)
+        if getattr(self,'combat_verified',None)==identity:return
+        if entry!=COMBAT_PREFIX and not CombatDamageHook.existing(self):raise NotReady('怪物受击入口与此版本不匹配')
+        rva,size,digest,relocs=COMBAT_DAMAGE_MANIFEST
+        data=bytearray(m.read(s+rva,size))
+        for off in relocs:struct.pack_into('<I',data,off,(struct.unpack_from('<I',data,off)[0]-(s-0x10000000))&0xffffffff)
+        if hashlib.sha256(data).hexdigest()!=digest:raise NotReady('怪物受击路径与此版本不匹配')
+        self.combat_verified=identity
+    def verify_combat_targets(self):
+        self.heroes_state();self.check_fields(('m_iUserFlag',))
+        identity=(self.epoch,self.server)
+        if getattr(self,'combat_targets_verified',None)==identity:return
+        for rva,data in COMBAT_TARGET_CHECKS:
+            if self.mem.read(self.server+rva,len(data))!=data:raise NotReady('怪物目标筛选路径与此版本不匹配')
+        self.combat_targets_verified=identity
+
+    def heroes_damage_values(self):
+        self.require_local();m=self.mem;s=self.server;values=[]
+        for rva,name in zip((0xa134e0,0xa13530),HEROES_DAMAGE):
+            obj=s+rva
+            if m.u32(obj+8)!=1 or m.string(m.u32(obj+12),80)!=name:raise NotReady('神殿伤害变量未注册')
+            parent=m.u32(obj+28)
+            if not parent or m.string(m.u32(parent+12),80)!=name:raise NotReady('神殿伤害根变量未确认')
+            # +0x24 is the default string; +0x28 is the CURRENT string.
+            value=m.string(m.u32(parent+40),64)
+            if not re.fullmatch(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?',value):raise NotReady('神殿伤害变量不是数值')
+            number=float(value)
+            if not math.isfinite(number) or not 0<=number<=1000000:raise NotReady('神殿伤害数值异常')
+            if m.i32(parent+52)!=int(number):raise NotReady('神殿伤害变量正在同步')
+            values.append(value)
+        return values
     def probe_feature(self,key):
         if not self.mem or not self.core_verified:raise NotReady('客户端尚未通过兼容性校验')
         if key=='commands':command_entry(self);return
@@ -913,6 +1746,12 @@ class Backend:
             'scale':('m_flModelScale','m_flScale','m_flHeadScale','m_flBodyScale'),
             'buy':('m_iUserFlag',),
         }
+        if key=='weapon_spawn':self.prepare_weapon_spawn('weapon_ak47');return
+        if key=='heroes':self.heroes_state();return
+        if key=='heroes_upgrade':self.heroes_enchants();return
+        if key=='heroes_model':self.heroes_model_api();return
+        if key=='heroes_custom_damage':self.verify_combat_damage();return
+        if key=='heroes_no_attack':self.verify_combat_targets();return
         if key=='ghost':self.require_ghost();return
         if key in groups:
             self.check_fields(groups[key])
@@ -930,7 +1769,7 @@ class Backend:
         raise NotReady('未登记的功能：'+key)
     def refresh_capabilities(self):
         self.capabilities={key:probe_result(lambda k=key:self.probe_feature(k)) for key in
-            ('commands','chat','local_commands','roster','hp','money','ammo','scale','buy','invulnerable','cheats','ghost','mutation','mutation_read','machine')}
+            ('commands','chat','local_commands','roster','hp','money','ammo','scale','buy','invulnerable','cheats','ghost','mutation','mutation_read','machine','heroes','heroes_upgrade','heroes_model','heroes_custom_damage','heroes_no_attack','weapon_spawn')}
         return self.capabilities
     def require(self,key):
         status=probe_result(lambda:self.probe_feature(key));self.capabilities[key]=status
@@ -960,7 +1799,15 @@ class Backend:
     def prepare_bot_stop(self):
         # An off sv_cheats is a satisfiable prerequisite, not an unavailable button.
         self.require('cheats');self.bot_stop_value()
-    def verify_command(self,text):
+    def prepare_weapon_spawn(self,name):
+        self.require_local()
+        if name not in {row['name'] for row in DATA['weapons']} or not re.fullmatch(r'weapon_[a-zA-Z0-9_]+',name):
+            raise ValueError('请从武器列表选择有效武器')
+        command='ent_create '+name
+        self.verify_command(command,allow_spawn_cheats_setup=True)
+        self.require('cheats')
+        return command
+    def verify_command(self,text,allow_spawn_cheats_setup=False):
         self.require('commands');command_bytes(text)
         for args in console_segments(text):
             name=args[0].casefold();entry=self.catalog.get(name)
@@ -982,7 +1829,8 @@ class Backend:
                 try:
                     if self.mem.u32(obj+8)!=1 or self.mem.string(self.mem.u32(obj+12),128).casefold()!=name:continue
                     if entry['kind']=='command' and not base<=self.mem.u32(obj+24)<base+size:continue
-                    if self.mem.u32(obj+20)&0x4000 and not self.cheats_value():continue
+                    if self.mem.u32(obj+20)&0x4000 and not self.cheats_value():
+                        if not (allow_spawn_cheats_setup and name=='ent_create'):continue
                 except Exception:continue
                 valid=True;break
             if not valid:raise NotReady('当前环境中此命令不可用：'+name)
@@ -1895,6 +2743,7 @@ class Worker(threading.Thread):
         self.events=events;self.requests=queue.Queue(maxsize=128);self.quit=threading.Event();self.b=Backend();self.controls=Controls(self.b,caps);self.request_lock=threading.Lock();self.request_generation=0
         self.players=[];self.chat=None;self.last_context=None;self.tick_error='';self.last_ui=0;self.bio_pending=None;self.restore_error='';self.command_watch=[];self.bot_stop_pending=None
         self.teleport_jobs=[];self.teleport_active=None
+        self.heroes=HeroesControls(self.b,self.emit);self.combat=HeroesCombatControls(self.b,self.emit);self.ground_spawn_pending=None
         self.each_round=False;self.auto_paused=False;self.cheats_desired=False;self.cheats_applied=None;self.cheats_next_at=0.;self.cheats_auto_error=''
         self.feature_preferences={};self.features_applied=set();self.features_round=None
         self.round_settings=RoundSettings(self.b)
@@ -1904,6 +2753,8 @@ class Worker(threading.Thread):
     def emit(self,kind,**data):self.events.put((kind,data))
     def emit_flags(self):
         self.emit('ghost_targets',keys=list(self.controls.ghost_keys) if self.controls.ghost else [])
+        self.emit('flags',heroes_temple=self.heroes.protected)
+        self.heroes.flags();self.combat.flags()
         self.emit('flags',hp=self.controls.hp is not None,money=self.controls.money is not None,invulnerable=self.controls.invulnerable,ammo=self.controls.ammo,scale=self.controls.scale is not None,buy=self.controls.buy,chat=self.chat is not None,round_hp='hp' in self.round_settings.jobs,round_money='money' in self.round_settings.jobs)
     def submit(self,action,**data):
         with self.request_lock:
@@ -1918,6 +2769,7 @@ class Worker(threading.Thread):
             except queue.Full:
                 self.emit('error',text='待执行操作已满，本次点击未提交；请等待或点击停止');self.emit_flags();return False
     def reset(self,restore=True):
+        self.combat.close();self.heroes.reset();self.ground_spawn_pending=None
         self.round_settings.clear()
         self.teleport_jobs.clear();self.teleport_active=None;self.cheats_applied=None
         self.features_applied.clear();self.features_round=None
@@ -1928,6 +2780,7 @@ class Worker(threading.Thread):
         self.chat=None;self.bio_pending=None;self.bot_stop_pending=None;errors=self.controls.stop(restore);self.emit('reset')
         if errors:self.emit('log',text='部分临时值尚未恢复，保持同一对局时将重试：'+errors[0])
     def advance_teleports(self):
+        if self.heroes.pending:return
         if self.b.player_queue and self.b.player_queue.pending:
             try:
                 if not self.b.player_queue.poll():return
@@ -1952,6 +2805,7 @@ class Worker(threading.Thread):
                 self.emit('error',text='传送玩家 #'+str(key.index)+' 失败：'+str(ex))
                 if not self.b.mem or not self.b.mem.alive():self.teleport_jobs.clear();return
     def advance_each_round(self):
+        if self.ground_spawn_pending:return
         if not self.each_round or self.auto_paused or time.monotonic()<self.cheats_next_at:return
         self.cheats_next_at=time.monotonic()+.4
         try:
@@ -1978,6 +2832,31 @@ class Worker(threading.Thread):
         except Exception as ex:
             if str(ex)!=self.cheats_auto_error:self.emit('log',text='每局应用等待房主对局：'+str(ex))
             self.cheats_auto_error=str(ex);self.cheats_next_at=time.monotonic()+1.5
+    def start_ground_spawn(self,name):
+        if self.ground_spawn_pending:raise NotReady('上一条刷枪请求正在等待游戏处理')
+        command=self.b.prepare_weapon_spawn(name)
+        self.ground_spawn_pending=dict(name=name,command=command,stage='prepare',epoch=self.b.epoch,
+            context=self.b.context,generation=self.request_generation,deadline=time.monotonic()+8.)
+        self.advance_ground_spawn()
+    def advance_ground_spawn(self):
+        job=self.ground_spawn_pending
+        if job is None:return
+        try:
+            if self.quit.is_set() or job['generation']!=self.request_generation:
+                self.ground_spawn_pending=None;return
+            if not self.b.mem or job['epoch']!=self.b.epoch or job['context']!=self.b.current_context():
+                raise NotReady('对局或连接已变化，已取消地面刷枪')
+            if time.monotonic()>job['deadline']:raise NotReady('刷枪等待 sv_cheats=1 超时，未发送创建命令')
+            self.b.prepare_weapon_spawn(job['name'])
+            cheats=self.b.cheats_value()
+            if job['stage']=='prepare' and not cheats:
+                self.b.set_cheats(True);job['stage']='cheats'
+                self.emit('log',text='刷枪正在开启 sv_cheats，读回生效后自动生成到地面');return
+            if not cheats:return
+            self.b.send(job['command']);self.ground_spawn_pending=None
+            self.emit('log',text='已确认 sv_cheats=1，地面刷枪命令已提交：'+job['command']+'；落地结果以游戏为准')
+        except Exception as ex:
+            self.ground_spawn_pending=None;self.emit('error',text='地面刷枪未完成：'+str(ex))
     def start_bot_stop(self,value):
         self.b.prepare_bot_stop()
         pending=self.bot_stop_pending
@@ -2016,6 +2895,7 @@ class Worker(threading.Thread):
         except Exception as ex:
             self.bot_stop_pending=None;self.emit('error',text=str(ex))
     def close_connection(self):
+        self.combat.close();self.heroes.close()
         try:self.b.close()
         except Exception as ex:self.emit('log',text='连接清理提示：'+str(ex))
     def advance_connection(self):
@@ -2083,16 +2963,36 @@ class Worker(threading.Thread):
             self.connection_generation=self.request_generation
             self.each_round=False;self.feature_preferences={};self.cheats_desired=False
             self.reset();self.emit_flags();return
+        if action=='heroes_model_watch':
+            self.heroes.model_watch=bool(data['enabled']);self.heroes.next_model_sample=0.;return
         if not self.b.mem:raise NotReady('请先连接游戏')
         if data.get('epoch')!=self.b.epoch:raise NotReady('对局或连接已变化，本次操作未执行')
         if self.b.current_context()!=self.b.context:raise NotReady('对局已变化，本次操作未执行')
-        feature={'cheats':'cheats','ammo':'ammo','buy':'buy','scale':'scale','ghost':'ghost','mutation_add':'mutation','mutation_read':'mutation_read','machine_scan':'machine','machine_reroll':'machine','chat':'chat','chat_timer':'chat'}.get(action)
+        feature={'cheats':'cheats','ammo':'ammo','buy':'buy','scale':'scale','ghost':'ghost','mutation_add':'mutation','mutation_read':'mutation_read','heroes':'heroes','heroes_temple':'heroes','heroes_auto':'heroes','heroes_no_wait':'heroes','heroes_upgrade':'heroes_upgrade','heroes_model':'heroes_model','heroes_custom_damage':'heroes_custom_damage','heroes_no_attack':'heroes_no_attack','weapon_spawn':'weapon_spawn','machine_scan':'machine','machine_reroll':'machine','chat':'chat','chat_timer':'chat'}.get(action)
         if feature and data.get('enabled',True):self.b.require(feature)
         if action=='locks':
             if data.get('invulnerable'):self.b.require('invulnerable')
             for key in ('hp','money'):
                 if data.get(key+'_enabled'):self.b.require(key)
         if action=='once':self.b.require(data['field'])
+        if action=='weapon_spawn':
+            self.start_ground_spawn(data['weapon']);return
+        if action=='heroes':
+            self.heroes.native(data['operation'],data.get('wave'));return
+        if action=='heroes_auto':
+            self.heroes.configure_auto(bool(data['enabled']),data.get('seconds',3));return
+        if action=='heroes_no_wait':
+            self.heroes.configure_wait(bool(data['enabled']));return
+        if action=='heroes_upgrade':
+            self.heroes.upgrade_all(data['field'],data['level'],self.players);return
+        if action=='heroes_custom_damage':
+            self.combat.damage(bool(data['enabled']),data.get('value'));return
+        if action=='heroes_no_attack':
+            self.combat.protect(bool(data['enabled']),self.players);return
+        if action=='heroes_model':
+            self.heroes.select_models(data['path'],data.get('keys',[]),self.players);return
+        if action=='heroes_temple':
+            self.heroes.protect(bool(data['enabled']));return
         if action=='player_action':
             if data['operation'] in ('goto','bring'):
                 keys=data.get('keys',[data.get('key')]);keys=[key for key in keys if key is not None]
@@ -2179,7 +3079,7 @@ class Worker(threading.Thread):
         if action=='cheats':
             enabled=data['enabled']
             self.cheats_desired=bool(enabled);self.cheats_applied=None
-            if not enabled:self.bot_stop_pending=None
+            if not enabled:self.bot_stop_pending=None;self.ground_spawn_pending=None
             self.b.set_cheats(enabled)
             base=_local_package_base();helper=base/'cheat_settings.py'
             if helper.is_file():
@@ -2232,8 +3132,11 @@ class Worker(threading.Thread):
                     if not restore_message and self.restore_error:self.emit('log',text='待恢复的临时值已处理')
                     self.restore_error=restore_message
                     if self.b.queue:self.b.queue.poll()
+                    self.combat.step(players)
+                    self.heroes.step(players)
                     if self.b.player_queue or self.teleport_jobs:self.advance_teleports()
                     self.advance_bot_stop()
+                    self.advance_ground_spawn()
                     if self.chat:
                         cmd,interval,due,epoch=self.chat
                         if epoch!=self.b.epoch:self.chat=None;self.emit('reset')
@@ -2269,7 +3172,7 @@ class Worker(threading.Thread):
                     # and restoration records while the same context is valid.
                     try:stable=self.b.context is not None and self.b.current_context()==self.b.context
                     except Exception:stable=False
-                    if not stable or self.teleport_jobs or self.teleport_active or self.chat or self.bot_stop_pending or self.controls.hp is not None or self.controls.money is not None or self.controls.ammo or self.controls.scale or self.controls.buy or self.controls.invulnerable or self.controls.ghost:self.reset(stable)
+                    if not stable or self.combat.no_attack or (self.combat.hook and self.combat.hook.desired is not None) or self.heroes.pending or self.heroes.protected or self.heroes.auto or self.heroes.no_wait or self.heroes.upgrades or self.ground_spawn_pending or self.teleport_jobs or self.teleport_active or self.chat or self.bot_stop_pending or self.controls.hp is not None or self.controls.money is not None or self.controls.ammo or self.controls.scale or self.controls.buy or self.controls.invulnerable or self.controls.ghost:self.reset(stable)
                     message=str(ex)
                     # A dead process or changed module set must not leave a stale
                     # handle behind. Release it here so the next automatic pass
@@ -2333,6 +3236,9 @@ EN = {
  '已选模式 · 等待勾选玩家':'Mode selected · waiting for checked players',
  '已选模式 · 等待玩家存活':'Mode selected · waiting for alive players',
  '等待游戏确认':'Waiting for game confirmation',
+ '洛奇英雄传功能':'Heroes Mode','怪物直接死亡':'Kill current monsters','快速完成当前波':'Finish current wave',
+ '神殿无法被攻击（不掉血）':'Protect temple (no damage)','直接到第':'Jump to wave','波攻击':'attack','跳转':'Jump',
+ '仅本地房主的洛奇英雄传对局可用。':'Available in a local Heroes host match only.',
  '生化 ZETA · 变异技能':'Zombie ZETA · Mutations','仅生化 ZETA 模式可用。':'Available in Zombie ZETA only.',
  '单次 1～10':'1–10 per request','在线刷枪':'Give weapons','对所有人有效':'Applies to all players','对自己有效':'Applies to you',
  '游戏内喊话':'In-game chat','状态以游戏实值为准':'Status follows actual game values',
@@ -2447,6 +3353,126 @@ def detect_language():
     try:return 'zh' if ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3ff == 4 else 'en'
     except (AttributeError,OSError):return 'en'
 
+# HEROES captions and diagnostics share the same window-local language switch.
+EN.update({
+ '怪物自动死亡':'Auto-kill monsters','停止怪物自动死亡':'Stop auto-kill',
+ '神殿不掉血':'Protect temple','跳过准备 / 波间等待':'Skip preparation / wave breaks',
+ '怪物死亡倒计时':'Auto-kill delay','输入后自动生效':'Changes apply automatically',
+ '已自动应用':'Applied automatically','开启时生效':'Applies when enabled','请输入 0～3600 秒':'Enter 0–3600 seconds',
+ '跳转攻击波次':'Jump to attack wave','波':'wave',
+ '所有玩家攻击力':'All players: attack','所有玩家生命强化':'All players: health','应用全体':'Apply to all',
+ '所有玩家自定义伤害':'All players: fixed damage','应用伤害':'Apply damage','启用自定义伤害':'Enable fixed damage',
+ '怪物不攻击玩家':'Monsters ignore players','当前使用原生伤害':'Using normal damage',
+ '玩家模型切换':'Player models','玩家 → 当前模型 → 下拉切换':'Player → Current model → Choose model',
+ '清空':'Clear','打开后读取当前玩家模型。':'Open this window to read player models.',
+ '选择模型…':'Choose model…','等待模型':'Waiting for model','待切换':'Pending',
+ '下拉切换单人；下方 HERO 按钮应用于勾选玩家。':'Use a dropdown for one player, or a HERO button for checked players.',
+ '等待参战玩家。':'Waiting for active players.','请先勾选要切换模型的玩家。':'Check players to change their models first.',
+ '请先勾选要切换模型的玩家':'Check players to change their models first',
+ '全体强化包含当前参战玩家；死亡玩家复活后补发。':'Upgrades apply to all active players, including dead players after they respawn.',
+ '进入洛奇对局后读取强化等级。':'Join a Heroes match to load upgrade levels.',
+ '已读取本局原生强化配置。':'Upgrade levels loaded for this match.','等待洛奇强化配置。':'Waiting for Heroes upgrade data.',
+ '请先选择本局已加载的强化等级':'Select a loaded upgrade level first',
+ '等待开始':'Waiting to start','准备':'Preparation','攻击':'Attack','结束':'Finished','本局结束':'Match finished',
+ '等待攻击/执行结果':'waiting for attack / result',
+ '上一项洛奇操作正在等游戏处理':'The previous Heroes action is still pending',
+ '上一项游戏操作尚未结束':'The previous game action is still pending',
+ '两项神殿伤害参数未在时限内达到目标值':'Temple damage settings were not confirmed before timeout',
+ '人物模型原生路径版本不符：':'Player model code does not match this build: ',
+ '伤害回调关闭：':'Damage callback shutdown: ','伤害回调未由游戏帧安装':'Damage callback was not installed on a game frame',
+ '伤害回调清理：':'Damage callback cleanup: ','伤害安装队列已取消':'Damage installation queue was canceled',
+ '伤害回调超过预留空间':'Damage callback exceeds reserved space',
+ '原生怪物死亡流程已执行；后续怪物仍按本波配置出生':'Current monsters were killed; later spawns still follow this wave.',
+ '另一房主工具正在使用自定义伤害':'Another host tool is using fixed damage',
+ '地图没有加载该波次':'This wave is not loaded on the map','地图波次树正在变化':'Map wave data is changing',
+ '地图波次表未加载或超出当前网络格式':'Map wave data is unavailable or exceeds the network format',
+ '地图波次资源不连续或正在加载':'Map waves are incomplete or still loading','地图波次资源未确认':'Map wave resources are not verified',
+ '对局已变化，洛奇操作取消':'Match changed; Heroes action canceled','对局正在切换':'The match is changing','对局已变化':'The match has changed',
+ '已关闭':'Disabled','已开启':'Enabled','开启':'Enabled','关闭':'Disabled',
+ '强化属性已读回':'Upgrade values confirmed','强化等级':'Upgrade level','自定义伤害':'Fixed damage','目标波次':'Target wave',
+ '强化表查询接口不匹配':'Upgrade lookup interface does not match','强化调用已执行，但等级/实际属性未达到目标':'Upgrade ran, but the level or values do not match the request',
+ '强化配置内容未确认':'Upgrade data is not verified','强化配置树正在变化':'Upgrade data is changing','强化配置表正在加载':'Upgrade table is loading',
+ '当前对局没有该强化等级':'This upgrade level is unavailable in the current match','当前没有参战玩家':'No active players',
+ '当前波已经进入结束阶段':'The current wave is already ending','怪物受击入口已变化':'Monster damage entry changed',
+ '怪物受击入口由其他修改占用':'Another modification owns the monster damage entry',
+ '怪物受击入口与此版本不匹配':'Monster damage entry does not match this build',
+ '怪物受击路径与此版本不匹配':'Monster damage code does not match this build',
+ '怪物目标筛选路径与此版本不匹配':'Monster targeting code does not match this build',
+ '怪物目标标志尚待恢复：':'Monster target flags still need restoration: ',
+ '所有玩家自定义伤害已启用：':'Fixed damage enabled for all players: ',
+ '无法分配伤害回调':'Could not allocate the damage callback','未知强化类型':'Unknown upgrade type',
+ '本局已结束，请等待下一局':'Match finished; wait for the next match','本局已结束':'Match finished',
+ '本局强化配置表尚未加载':'Upgrade data has not loaded for this match','本波已进入结束/结算流程':'This wave is now ending / settling',
+ '模型切换已确认':'Model change confirmed','模型加载接口尚未就绪':'Model loading interface is not ready',
+ '模型已读回确认：#':'Model confirmed: #','模型引擎接口不匹配':'Model engine interface does not match',
+ '模型接口方法发生变化':'Model interface method changed',
+ '模型未达到目标：预缓存失败或原生角色规则覆盖了选择':'Model did not change: precaching failed or character rules overrode the selection',
+ '模式事件系统尚未就绪':'Mode event system is not ready','此项仅适用于本地房主的洛奇英雄传模式':'Available only to the local host in Heroes mode',
+ '死亡玩家将在复活后切换模型':'Dead players will change models after respawning',
+ '洛奇伤害/停攻：':'Heroes damage / targeting: ','洛奇功能不可用原因：':'Heroes unavailable: ','洛奇功能暂不可用：':'Heroes temporarily unavailable: ',
+ '自定义伤害：':'Fixed damage: ','怪物停攻：':'Monster targeting: ',
+ '洛奇原生调用路径版本不符：':'Heroes code does not match this build: ',
+ '洛奇操作已排入游戏主线程，等待执行结果':'Heroes action queued; waiting for the game frame',
+ '洛奇操作未确认：':'Heroes action not confirmed: ','洛奇模式状态尚未就绪':'Heroes mode is not ready','洛奇波次正在切换':'Heroes wave is changing',
+ '玩家刚刚死亡，复活后再强化':'Player died; upgrade after respawning','玩家刚刚离开参战阵营':'Player left the active team',
+ '玩家属性虚函数不属于当前服务端':'Player attribute method does not belong to this server',
+ '玩家已转为观战':'Player is now spectating','玩家强化原生路径版本不符：':'Player upgrade code does not match this build: ',
+ '神殿伤害参数被外部更改，保护未保持，正在恢复原值':'Temple damage was changed externally; restoring original values',
+ '神殿伤害变量不是数值':'Temple damage variable is not numeric','神殿伤害变量未注册':'Temple damage variable is not registered',
+ '神殿伤害变量正在同步':'Temple damage variable is synchronizing','神殿伤害数值异常':'Invalid temple damage value','神殿伤害根变量未确认':'Temple damage root variable is not verified',
+ '神殿保护切换尚未核对完成':'Temple protection change is still being verified',
+ '神殿保护已关闭，两项伤害参数已恢复原值':'Temple protection disabled; both damage settings restored',
+ '神殿保护已开启（普通怪与 Boss 伤害均已读回为 0）':'Temple protection enabled; normal and boss damage confirmed as zero',
+ '等待原服务器模块恢复连接后还原神殿参数':'Waiting for the original server to restore temple settings',
+ '关闭时未确认神殿参数恢复；原值：':'Temple restoration not confirmed at shutdown; original values: ',
+ '等待时间已归零':'Wait time is now zero','等待时间未归零':'Wait time has not reached zero',
+ '等待洛奇对局开始':'Waiting for a Heroes match','等待玩家复活':'Waiting for the player to respawn',
+ '等待玩家存活后强化':'Waiting for the player to be alive before upgrading',
+ '结束调用已执行，但尚未观察到本波结束':'Finish request ran, but this wave has not ended yet',
+ '自定义伤害已关闭，恢复原生伤害':'Fixed damage disabled; normal damage restored',
+ '该玩家的模型替换方法尚未确认':'Model replacement method is not verified for this player',
+ '请选择列表中的 HERO 模型':'Choose a HERO model from the list',
+ '跳波调用已执行，但未读回目标攻击阶段':'Wave jump ran, but the requested attack phase was not confirmed',
+ '全体强化等待恢复：':'All-player upgrade waiting: ','神殿保护：':'Temple protection: ',
+ '全体玩家强化':'All-player upgrades','跳过等待':'Skip waiting','神殿保护':'Temple protection',
+})
+
+def heroes_english(text):
+    """Translate system-generated Heroes status fragments, never player names."""
+    if text in EN:return EN[text]
+    rules=(
+        (r'等级 (\d+) · (.+) 倍',lambda m:f'Level {m[1]} · {m[2]}×'),
+        (r'(\d+)（等级 (\d+)）',lambda m:f'{m[1]} (Level {m[2]})'),
+        (r'第 (\d+) 波 · (.+) · 神殿生命 (\d+) · 本波剩余 (-?\d+)(.*)',lambda m:f'Wave {m[1]} · {heroes_english(m[2])} · Temple HP {m[3]} · Remaining {m[4]}'+heroes_english(m[5])),
+        (r' · 自动清怪 (.*?)( · 等待强化 \d+ 人次)?',lambda m:' · Auto-kill '+heroes_english(m[1])+heroes_english(m[2] or '')),
+        (r' · 等待强化 (\d+) 人次',lambda m:f' · Upgrades pending: {m[1]}'),
+        (r'([\d.]+) 秒',lambda m:f'{m[1]} s'),
+        (r'怪物自动死亡：开启，倒计时 (.+) 秒循环执行',lambda m:f'Auto-kill enabled: repeat every {m[1]} seconds'),
+        (r'怪物自动死亡：关闭',lambda m:'Auto-kill disabled'),
+        (r'跳过准备和波间等待：(开启|关闭)',lambda m:'Skip preparation and wave breaks: '+heroes_english(m[1])),
+        (r'怪物不攻击玩家：(已开启|已关闭)',lambda m:'Monsters ignore players: '+heroes_english(m[1])),
+        (r'已提交，实际单次伤害 (\d+)',lambda m:f'Submitted; effective damage per hit: {m[1]}'),
+        (r'自定义伤害已提交，实际单次伤害值 (\d+)；等待游戏帧安装',lambda m:f'Fixed damage requested: {m[1]}; waiting for a game frame'),
+        (r'已提交 (\d+) 人，等待游戏处理。',lambda m:f'Submitted for {m[1]} players; waiting for the game.'),
+        (r'模型切换已排队：(.*)，共 (\d+) 人；死亡玩家复活后应用',lambda m:f'Model queued: {m[1]}, {m[2]} players; dead players apply after respawning'),
+        (r'模型切换已排队：(\d+) 人；死亡玩家复活后应用',lambda m:f'Model change queued for {m[1]} players; dead players apply after respawning'),
+        (r'全体玩家强化已排队：(atk|hp) 等级 (\d+)，共 (\d+) 人；死亡玩家复活后补发',lambda m:f'Upgrade queued: {"attack" if m[1]=="atk" else "health"} level {m[2]}, {m[3]} players; dead players apply after respawning'),
+        (r'全体强化 (atk|hp) 完成：已确认 (\d+) 人，失败 (\d+) 人',lambda m:f'All-player {"attack" if m[1]=="atk" else "health"} upgrade: {m[2]} confirmed, {m[3]} failed'),
+        (r'(模型切换|全体强化) #(\d+) (未执行|等待)：(.*)',lambda m:f'{"Model change" if m[1]=="模型切换" else "Upgrade"} #{m[2]} {"not applied" if m[3]=="未执行" else "waiting"}: '+heroes_english(m[4])),
+        (r'已读回第 (\d+) 波攻击阶段',lambda m:f'Attack phase confirmed for wave {m[1]}'),
+        (r'(自定义伤害|怪物死亡倒计时|目标波次|强化等级)(必须是整数|必须是数字)',lambda m:heroes_english(m[1])+(' must be an integer' if m[2]=='必须是整数' else ' must be numeric')),
+        (r'(自定义伤害|怪物死亡倒计时|目标波次|强化等级)范围 (.+)',lambda m:heroes_english(m[1])+' range: '+m[2].replace('～','–')),
+        (r'已提交：(.*)；等待游戏处理。',lambda m:'Submitted: '+heroes_english(m[1])+'; waiting for the game.'),
+        (r'点击执行：(.*)',lambda m:'Run: '+heroes_english(m[1])),
+    )
+    for pattern,render in rules:
+        match=re.fullmatch(pattern,text)
+        if match:return render(match)
+    for raw,en in sorted(EN.items(),key=lambda r:-len(r[0])):
+        if len(raw)>=4 and text.startswith(raw):return en+heroes_english(text[len(raw):])
+    return text
+
+
 class UiLanguage:
     def __init__(self,root,language=None):
         self.root=root;self.lang=language or detect_language();self.widgets={};self.variables={};self.buttons=[]
@@ -2456,7 +3482,8 @@ class UiLanguage:
     def t(self,text):
         raw=self.source(text)
         if self.lang=='zh':return raw
-        translated=EN.get(raw)
+        hero_text=heroes_english(raw)
+        translated=hero_text if hero_text!=raw else EN.get(raw)
         if translated is None:
             for pattern,render in PATTERNS:
                 match=re.fullmatch(pattern,raw)
@@ -2474,7 +3501,7 @@ class UiLanguage:
         button=ttk.Button(parent,text='English' if self.lang=='zh' else '中文',command=self.toggle,**kw)
         self.buttons.append(button);return button
     def capture(self,widget):
-        if widget in self.widgets:return
+        if widget in self.widgets or getattr(widget,'_ui_literal',False):return
         if isinstance(widget,(tk.Label,tk.Button,tk.Checkbutton,tk.Radiobutton,tk.LabelFrame,
                               ttk.Label,ttk.Button,ttk.Checkbutton,ttk.Radiobutton,ttk.LabelFrame)) and widget not in self.buttons:
             raw=str(widget.cget('text'));self.widgets[widget]=raw;original=widget.configure
@@ -2766,6 +3793,11 @@ class App:
         self.feature_widgets=live
         for key in ('hp','money','ammo','scale','buy','chat','invulnerable'):
             if not self.ready or not self.capabilities.get(key,{}).get('available',False):self.vars[key].set(False)
+        if hasattr(self,'heroes_level_boxes'):
+            enabled=self.ready and bool(self.heroes_level_rows) and self.capabilities.get('heroes_upgrade',{}).get('available',False)
+            for box in self.heroes_level_boxes.values():box.state(['!disabled','readonly'] if enabled else ['disabled'])
+        if hasattr(self,'heroes_model_widgets'):
+            for widgets in self.heroes_model_widgets.values():widgets[-1].state(['!disabled','readonly'] if self.ready and self.capabilities.get('heroes_model',{}).get('available',False) else ['disabled'])
         if self.worker:self.worker.command_watch=list(dict.fromkeys(watch))
         if hasattr(self,'player_actions'):self.update_player_actions()
     def strvar(self,key,default):
@@ -2914,7 +3946,10 @@ class App:
                 note+=f' · Confirmed {confirmed}/{len(targets)}' if targets else ' · Waiting for players'
         self.invulnerable_note.configure(text=note,fg=GREEN if confirmed else MUTED)
     def on_window_configure(self,event):
-        if event.widget is self.root and not self.fitting_window:self.queue_window_fit()
+        if event.widget is not self.root or self.fitting_window:return
+        size=(event.width,event.height)
+        if size!=getattr(self,'last_window_size',None):
+            self.last_window_size=size;self.queue_window_fit()
     def queue_window_fit(self):
         if self.closing or self.fit_job is not None:return
         self.fit_job=self.root.after(100,self.fit_window)
@@ -2953,9 +3988,9 @@ class App:
             if root.state()=='zoomed':return
             width=min(available_width,max(needed_width,root.winfo_width()))
             height=min(available_height,max(needed_height,root.winfo_height()))
-            x=max(left+8,min(root.winfo_x(),right-width-24));y=max(top+8,min(root.winfo_y(),bottom-height-48))
-            if (width,height,x,y)!=(root.winfo_width(),root.winfo_height(),root.winfo_x(),root.winfo_y()):
-                root.geometry(f'{width}x{height}{x:+d}{y:+d}')
+            # Content fitting may resize, but never repositions a user-dragged window.
+            if (width,height)!=(root.winfo_width(),root.winfo_height()):
+                root.geometry(f'{width}x{height}')
         finally:self.fitting_window=False
     def queue_invulnerability_tip(self):
         self.hide_invulnerability_tip()
@@ -3065,6 +4100,9 @@ class App:
         if player.team not in (2,3):self.log('观战或电视实体不能作为此操作目标',True);return False
         return self.request('player_action',operation=action,key=player.key)
     def refresh_language(self):
+        self.heroes_model_window.title(self.language.t('玩家模型切换'))
+        self.update_heroes_models(self.heroes_model_rows,self.heroes_model_reason)
+        self.update_heroes_levels(self.heroes_level_rows,self.language.source(self.heroes_upgrade_status.cget('text')))
         self.update_players(list(self.players.values()));self.filter_catalog();self.queue_window_fit()
         self.defaults_button.configure(text=self.language.t('撤销恢复默认值' if self.undo_defaults is not None else '恢复默认值'))
     def toggle_player(self,event):
@@ -3155,7 +4193,7 @@ class App:
         label(row,'武器').pack(side='left',padx=(0,9))
         self.weapon_query=tk.StringVar();ttk.Entry(row,textvariable=self.weapon_query,width=12).pack(side='left',padx=(0,8))
         self.weapon_choice=tk.StringVar();self.weapon_box=ttk.Combobox(row,textvariable=self.weapon_choice,state='readonly',width=26);self.weapon_box.pack(side='left',fill='x',expand=True)
-        self.spawn_weapon_button=self.feature_control(ttk.Button(row,text='生成到地面',style='Small.TButton',command=self.spawn_weapon),'commands',lambda:self.weapon_command());self.spawn_weapon_button.pack(side='left',padx=(9,0))
+        self.spawn_weapon_button=self.feature_control(ttk.Button(row,text='生成到地面',style='Small.TButton',command=self.spawn_weapon),'weapon_spawn');self.spawn_weapon_button.pack(side='left',padx=(9,0))
         self.weapon_query.trace_add('write',lambda *_:self.filter_weapons());self.filter_weapons()
         box=self.card(page,'生化 ZETA · 变异技能')
         row=tk.Frame(box,bg=CARD);row.pack(fill='x',pady=(0,5))
@@ -3168,6 +4206,177 @@ class App:
         self.feature_control(ttk.Button(row,text='刷新机器',style='Small.TButton',command=lambda:self.request('machine_scan')),'machine').pack(side='left',padx=8)
         self.feature_control(ttk.Button(row,text='重抽机器技能',style='Small.TButton',command=self.reroll_machine),'machine').pack(side='left')
         self.bio_status=label(box,'仅生化 ZETA 模式可用。',True,9,wraplength=720,justify='left');self.bio_status.pack(anchor='w',pady=(4,0))
+        box=self.card(page,'洛奇英雄传功能');self.heroes_card=box
+        bar=tk.Frame(box,bg=CARD);bar.pack(fill='x',pady=(0,6))
+        self.boolvar('heroes_auto');self.boolvar('heroes_no_wait')
+        self.heroes_auto_button=self.feature_control(ttk.Button(bar,text='怪物自动死亡',style='Small.TButton',command=self.toggle_heroes_auto),'heroes')
+        self.heroes_auto_button.pack(side='left')
+        self.vars['heroes_auto'].trace_add('write',lambda *_:self.refresh_heroes_auto())
+        self.feature_control(ttk.Button(bar,text='快速完成当前波',style='Small.TButton',command=lambda:self.request('heroes',operation='finish')),'heroes').pack(side='left',padx=8)
+        options=tk.Frame(box,bg=CARD);options.pack(fill='x',pady=(0,4))
+        self.feature_control(ttk.Checkbutton(options,text='神殿不掉血',variable=self.boolvar('heroes_temple'),command=lambda:self.request('heroes_temple',enabled=self.vars['heroes_temple'].get())),'heroes').pack(side='left')
+        self.feature_control(ttk.Checkbutton(options,text='跳过准备 / 波间等待',variable=self.vars['heroes_no_wait'],command=lambda:self.request('heroes_no_wait',enabled=self.vars['heroes_no_wait'].get())),'heroes').pack(side='left',padx=20)
+        form=tk.Frame(box,bg=CARD);form.pack(anchor='w',fill='x',pady=(3,6));self.heroes_form=form
+        form.columnconfigure(0,minsize=170);form.columnconfigure(1,minsize=260)
+        label(form,'怪物死亡倒计时',True).grid(row=0,column=0,sticky='w',pady=5)
+        interval=tk.Frame(form,bg=CARD);interval.grid(row=0,column=1,sticky='w',pady=5)
+        self.heroes_interval_entry=ttk.Entry(interval,textvariable=self.strvar('heroes_seconds',3),width=8,justify='center')
+        self.heroes_interval_entry.pack(side='left');label(interval,'秒',True).pack(side='left',padx=8)
+        self.heroes_interval_hint=label(form,'输入后自动生效',True,9);self.heroes_interval_hint.grid(row=0,column=2,sticky='w',padx=(12,0))
+        self.heroes_seconds_job=None
+        self.vars['heroes_seconds'].trace_add('write',lambda *_:self.queue_heroes_seconds())
+        self.heroes_interval_entry.bind('<Return>',lambda _:self.commit_heroes_seconds())
+        self.heroes_interval_entry.bind('<FocusOut>',lambda _:self.commit_heroes_seconds())
+        label(form,'跳转攻击波次',True).grid(row=1,column=0,sticky='w',pady=5)
+        wave=tk.Frame(form,bg=CARD);wave.grid(row=1,column=1,sticky='w',pady=5)
+        ttk.Entry(wave,textvariable=self.strvar('heroes_wave',1),width=8,justify='center').pack(side='left');label(wave,'波',True).pack(side='left',padx=8)
+        self.feature_control(ttk.Button(form,text='跳转',width=12,style='Small.TButton',command=lambda:self.request('heroes',operation='jump',wave=self.vars['heroes_wave'].get())),'heroes').grid(row=1,column=2,sticky='ew',padx=(12,0),pady=5)
+        self.heroes_level_rows=[];self.heroes_level_boxes={}
+        for row,(field,title) in enumerate((('atk','所有玩家攻击力'),('hp','所有玩家生命强化')),2):
+            label(form,title,True).grid(row=row,column=0,sticky='w',pady=5)
+            combo=ttk.Combobox(form,textvariable=self.strvar('heroes_'+field,''),state='readonly',width=23)
+            combo.grid(row=row,column=1,sticky='ew',pady=5);self.heroes_level_boxes[field]=combo
+            self.feature_control(ttk.Button(form,text='应用全体',width=12,style='Small.TButton',command=lambda f=field:self.apply_heroes_upgrade(f)),'heroes_upgrade').grid(row=row,column=2,sticky='ew',padx=(12,0),pady=5)
+        label(form,'所有玩家自定义伤害',True).grid(row=4,column=0,sticky='w',pady=5)
+        self.heroes_damage_entry=ttk.Entry(form,textvariable=self.strvar('heroes_damage_value','999999999'),width=23)
+        self.heroes_damage_entry.grid(row=4,column=1,sticky='ew',pady=5)
+        self.feature_control(ttk.Button(form,text='应用伤害',width=12,style='Small.TButton',command=lambda:self.apply_heroes_damage(True)),'heroes_custom_damage').grid(row=4,column=2,sticky='ew',padx=(12,0),pady=5)
+        self.heroes_damage_switch=self.feature_control(ttk.Checkbutton(form,text='启用自定义伤害',variable=self.boolvar('heroes_custom_damage'),command=lambda:self.apply_heroes_damage(self.vars['heroes_custom_damage'].get())),'heroes_custom_damage')
+        self.heroes_damage_switch.grid(row=5,column=0,sticky='w',pady=5)
+        self.heroes_no_attack_switch=self.feature_control(ttk.Checkbutton(form,text='怪物不攻击玩家',variable=self.boolvar('heroes_no_attack'),command=lambda:self.request('heroes_no_attack',enabled=self.vars['heroes_no_attack'].get())),'heroes_no_attack')
+        self.heroes_no_attack_switch.grid(row=5,column=1,columnspan=2,sticky='w',pady=5)
+        self.heroes_damage_note=label(form,'当前使用原生伤害',True,9)
+        self.heroes_damage_note.grid(row=6,column=0,columnspan=3,sticky='w',pady=(0,5))
+        self.heroes_model_rows=[];self.heroes_model_reason=''
+        self.heroes_model_open=False;self.heroes_model_widgets={};self.heroes_model_choices={};self.heroes_model_checks={}
+        self.heroes_model_button=self.feature_control(ttk.Button(box,text='玩家模型切换',style='Small.TButton',command=self.toggle_heroes_models),'heroes_model')
+        self.heroes_model_button.pack(anchor='w',pady=(5,6))
+        self.heroes_model_window=tk.Toplevel(self.root);self.heroes_model_window.withdraw();self.heroes_model_window.title('玩家模型切换')
+        self.heroes_model_window.configure(bg=BG);self.heroes_model_window.geometry('880x510');self.heroes_model_window.minsize(700,380)
+        self.heroes_model_window.transient(self.root);self.heroes_model_window.protocol('WM_DELETE_WINDOW',self.close_heroes_models)
+        self.heroes_model_panel=tk.Frame(self.heroes_model_window,bg=INPUT,padx=16,pady=14);self.heroes_model_panel.pack(fill='both',expand=True)
+        top=tk.Frame(self.heroes_model_panel,bg=INPUT);top.pack(fill='x')
+        label(top,'玩家 → 当前模型 → 下拉切换',True,9,bg=INPUT).pack(side='left')
+        ttk.Button(top,text='全选',style='Small.TButton',command=lambda:self.check_all_heroes_models(True)).pack(side='right')
+        ttk.Button(top,text='清空',style='Small.TButton',command=lambda:self.check_all_heroes_models(False)).pack(side='right',padx=6)
+        model_scroll=ScrollFrame(self.heroes_model_panel,bg=CARD);model_scroll.pack(fill='both',expand=True,pady=12)
+        self.heroes_model_list=model_scroll.body
+        self.heroes_model_note=label(self.heroes_model_panel,'打开后读取当前玩家模型。',True,9,bg=INPUT,wraplength=740);self.heroes_model_note.pack(anchor='w',pady=(0,6))
+        buttons=tk.Frame(self.heroes_model_panel,bg=INPUT);buttons.pack(fill='x')
+        self.heroes_model_presets=[]
+        for i,(name,path) in enumerate(HERO_MODELS):
+            button=self.feature_control(ttk.Button(buttons,text=name,width=13,style='Small.TButton',command=lambda p=path:self.apply_heroes_model(p)),'heroes_model')
+            button.grid(row=i//4,column=i%4,sticky='ew',padx=(0,7),pady=4);self.heroes_model_presets.append(button)
+        label(box,'全体强化包含当前参战玩家；死亡玩家复活后补发。',True,9).pack(anchor='w',pady=(4,0))
+        self.heroes_upgrade_status=label(box,'进入洛奇对局后读取强化等级。',True,9,wraplength=740);self.heroes_upgrade_status.pack(anchor='w')
+        self.heroes_status=label(box,'仅本地房主的洛奇英雄传对局可用。',True,9,wraplength=740,justify='left');self.heroes_status.pack(anchor='w',pady=(4,0))
+
+    def apply_heroes_damage(self,enabled):
+        value=self.vars['heroes_damage_value'].get()
+        if enabled:
+            try:stored=heroes_fixed_damage(value)
+            except ValueError as ex:self.log(str(ex),True);self.vars['heroes_custom_damage'].set(False);return False
+        accepted=self.request('heroes_custom_damage',enabled=enabled,value=value)
+        if accepted:
+            self.heroes_damage_note.configure(text=f'已提交，实际单次伤害 {stored:.0f}' if enabled else '当前使用原生伤害')
+            self.schedule_save()
+        return accepted
+
+    def refresh_heroes_auto(self):
+        enabled=self.vars['heroes_auto'].get()
+        self.heroes_auto_button.configure(text='停止怪物自动死亡' if enabled else '怪物自动死亡',style='Running.TButton' if enabled else 'Small.TButton')
+    def toggle_heroes_auto(self):
+        enabled=not self.vars['heroes_auto'].get()
+        if self.request('heroes_auto',enabled=enabled,seconds=self.vars['heroes_seconds'].get()):self.vars['heroes_auto'].set(enabled)
+    def apply_heroes_seconds(self):
+        try:bounded_float(self.vars['heroes_seconds'].get(),0,3600,'怪物死亡倒计时')
+        except ValueError as ex:self.log(str(ex),True);return False
+        if self.vars['heroes_auto'].get():return self.request('heroes_auto',enabled=True,seconds=self.vars['heroes_seconds'].get())
+        self.schedule_save();return True
+    def queue_heroes_seconds(self):
+        if self.settings_loading or self.closing:return
+        if self.heroes_seconds_job is not None:self.root.after_cancel(self.heroes_seconds_job)
+        self.heroes_seconds_job=self.root.after(500,self.commit_heroes_seconds)
+    def commit_heroes_seconds(self):
+        if self.heroes_seconds_job is not None:self.root.after_cancel(self.heroes_seconds_job);self.heroes_seconds_job=None
+        if self.settings_loading or self.closing:return
+        try:seconds=bounded_float(self.vars['heroes_seconds'].get(),0,3600,'怪物死亡倒计时')
+        except ValueError:self.heroes_interval_hint.configure(text='请输入 0～3600 秒');return False
+        stamp=(seconds,bool(self.vars['heroes_auto'].get()))
+        if stamp==getattr(self,'heroes_seconds_applied',None):return True
+        accepted=self.apply_heroes_seconds()
+        if accepted:self.heroes_seconds_applied=stamp;self.heroes_interval_hint.configure(text='已自动应用' if stamp[1] else '开启时生效')
+        return accepted
+    def toggle_heroes_models(self):
+        self.heroes_model_open=True
+        window=self.heroes_model_window;self.root.update_idletasks();window.update_idletasks()
+        left,top,right,bottom=self.window_work_area()
+        width=min(max(880,window.winfo_width(),window.winfo_reqwidth()),right-left-32)
+        height=min(max(510,window.winfo_height()),bottom-top-64)
+        window.minsize(min(700,width),min(380,height))
+        x=self.root.winfo_rootx()+(self.root.winfo_width()-width)//2
+        y=self.root.winfo_rooty()+(self.root.winfo_height()-height)//2
+        x=max(left,min(x,right-width-16));y=max(top,min(y,bottom-height-48))
+        # A leading '+' also preserves negative absolute coordinates on left monitors.
+        window.geometry(f'{width}x{height}+{x}+{y}');window.deiconify();window.lift()
+        if self.worker:self.worker.submit('heroes_model_watch',enabled=True)
+    def close_heroes_models(self):
+        self.heroes_model_open=False;self.heroes_model_window.withdraw()
+        if self.worker:self.worker.submit('heroes_model_watch',enabled=False)
+    def check_all_heroes_models(self,enabled):
+        for var in self.heroes_model_checks.values():var.set(enabled)
+    def update_heroes_models(self,rows,reason=''):
+        self.heroes_model_rows=rows;self.heroes_model_reason=reason
+        players={p.key:p for p in self.players.values()}
+        rows=[row for row in rows if row['key'] in players]
+        keys={r['key'] for r in rows}
+        for key in list(self.heroes_model_widgets):
+            if key not in keys:
+                for widget in self.heroes_model_widgets.pop(key):widget.destroy()
+                self.heroes_model_checks.pop(key,None);self.heroes_model_choices.pop(key,None)
+        names={path:name for name,path in HERO_MODELS}
+        for rownum,row in enumerate(rows):
+            key=row['key'];p=players[key]
+            if key not in self.heroes_model_widgets:
+                checked=tk.BooleanVar(value=False);choice=tk.StringVar(value=self.language.t('选择模型…'))
+                check=ttk.Checkbutton(self.heroes_model_list,variable=checked)
+                who=label(self.heroes_model_list,'',size=9);who._ui_literal=True
+                current=label(self.heroes_model_list,'',True,9)
+                combo=ttk.Combobox(self.heroes_model_list,textvariable=choice,values=[name for name,_ in HERO_MODELS],state='readonly',width=15)
+                combo.bind('<<ComboboxSelected>>',lambda _,k=key:self.choose_heroes_model(k))
+                self.heroes_model_widgets[key]=(check,who,current,combo);self.heroes_model_checks[key]=checked;self.heroes_model_choices[key]=choice
+            check,who,current,combo=self.heroes_model_widgets[key]
+            who.configure(text=f'#{key.index} {p.name[:18]}'+(' · '+self.language.t('自己') if p.local else '')+(' · '+self.language.t('死亡') if not row['alive'] else ''))
+            model_name=names.get(row['path']) or (Path(row['path']).stem if row['path'] else '等待模型')
+            current.configure(text=self.language.t(model_name)+(' · '+self.language.t('待切换') if row['pending'] else ''))
+            if combo.current()<0:self.heroes_model_choices[key].set(self.language.t('选择模型…'))
+            for col,widget in enumerate((check,who,current,combo)):widget.grid(row=rownum,column=col,sticky='w',padx=(0,12),pady=5)
+            combo.state(['!disabled','readonly'] if self.ready and self.capabilities.get('heroes_model',{}).get('available',False) else ['disabled'])
+        self.heroes_model_note.configure(text=reason or ('下拉切换单人；下方 HERO 按钮应用于勾选玩家。' if rows else '等待参战玩家。'))
+        self.language.capture(self.heroes_model_list)
+    def choose_heroes_model(self,key):
+        selected=self.heroes_model_choices[key].get();path=dict(HERO_MODELS).get(selected)
+        if path:self.apply_heroes_model(path,[key])
+    def apply_heroes_model(self,path,keys=None):
+        if keys is None:keys=[key for key,var in self.heroes_model_checks.items() if var.get()]
+        if not keys:self.heroes_model_note.configure(text='请先勾选要切换模型的玩家。');return False
+        if self.request('heroes_model',path=path,keys=keys):
+            self.heroes_model_note.configure(text=f'已提交 {len(keys)} 人，等待游戏处理。');return True
+        return False
+
+    def update_heroes_levels(self,rows,reason=''):
+        self.heroes_level_rows=rows
+        for field,box in self.heroes_level_boxes.items():
+            selected=box.current();raw=self.language.source(self.vars['heroes_'+field].get())
+            sources=[f'等级 {level} · {atk:g} 倍' if field=='atk' else f'{hp}（等级 {level}）' for level,atk,hp in rows]
+            if raw in sources:selected=sources.index(raw)
+            values=[self.language.t(value) for value in sources];box.configure(values=values)
+            if values:box.current(selected if 0<=selected<len(values) else 0)
+        self.heroes_upgrade_status.configure(text=reason or ('已读取本局原生强化配置。' if rows else '等待洛奇强化配置。'))
+    def apply_heroes_upgrade(self,field):
+        index=self.heroes_level_boxes[field].current()
+        if not 0<=index<len(self.heroes_level_rows):self.log('请先选择本局已加载的强化等级',True);return False
+        return self.request('heroes_upgrade',field=field,level=self.heroes_level_rows[index][0])
     def update_scale_inputs(self):
         uniform=self.vars['scale_uniform'].get()
         for entry in (self.head_scale_entry,self.body_scale_entry):entry.state(['disabled'] if uniform else ['!disabled'])
@@ -3197,7 +4406,7 @@ class App:
         else:self.weapon_choice.set('')
     def spawn_weapon(self):
         command=self.weapon_command()
-        if command:self.send_command(command)
+        if command:self.request('weapon_spawn',weapon=self.weapon_rows[self.weapon_box.current()]['name'])
         else:self.log('请先选择武器',True)
     def reroll_machine(self):
         index=self.machine_box.current()
@@ -3336,7 +4545,7 @@ class App:
         if require_ready and not self.ready:
             if action=='cheats':self.vars['cheats'].set(self.last_cheats)
             self.log('请先连接游戏并进入对局',True);self.reset_flags();return
-        feature={'once':data.get('field'),'round_setting':data.get('field'),'ammo':'ammo','buy':'buy','scale':'scale','ghost':'ghost','cheats':'cheats','mutation_read':'mutation_read','mutation_add':'mutation','machine_scan':'machine','machine_reroll':'machine','command':'commands','chat':'chat','chat_timer':'chat'}.get(action)
+        feature={'once':data.get('field'),'round_setting':data.get('field'),'ammo':'ammo','buy':'buy','scale':'scale','ghost':'ghost','cheats':'cheats','mutation_read':'mutation_read','heroes':'heroes','heroes_temple':'heroes','heroes_auto':'heroes','heroes_no_wait':'heroes','heroes_upgrade':'heroes_upgrade','heroes_model':'heroes_model','heroes_custom_damage':'heroes_custom_damage','heroes_no_attack':'heroes_no_attack','weapon_spawn':'weapon_spawn','mutation_add':'mutation','machine_scan':'machine','machine_reroll':'machine','command':'commands','chat':'chat','chat_timer':'chat'}.get(action)
         if require_ready and feature and data.get('enabled',True) and not self.capabilities.get(feature,{}).get('available',False):
             self.log(self.capabilities.get(feature,{}).get('reason','当前功能不可用'),True);self.apply_capabilities();return
         if self.worker:
@@ -3348,7 +4557,7 @@ class App:
                     if action=='scale' and value:value=dict(head=data['head'],body=data['body'],uniform=data['uniform'],factor=data['factor'])
                     self.feature_preferences[action]=value;self.schedule_save()
                     self.worker.submit('each_round',enabled=self.vars['each_round'].get(),cheats=self.cheats_desired,features=dict(self.feature_preferences))
-                title={'connect':'连接游戏','disconnect':'断开游戏','stop':'停止全部','once':'设置玩家数值','round_setting':'每局设置','player_action':{'vote':'投票踢出','kick':'无票踢出','goto':'传送到此人身边','bring':'将此人传送过来'}.get(data.get('operation'),'玩家操作'),'locks':'锁定玩家数值','ammo':'无限子弹','buy':'随时购买','scale':'模型比例','ghost':('幽灵显形' if data.get('enabled') else '幽灵隐身'),'cheats':'作弊开关','mutation_add':'增加变异','mutation_read':'读取变异','machine_scan':'刷新机器','machine_reroll':'重抽机器技能','chat':'立即喊话','chat_timer':'定时喊话'}.get(action,action)
+                title={'connect':'连接游戏','disconnect':'断开游戏','stop':'停止全部','once':'设置玩家数值','round_setting':'每局设置','player_action':{'vote':'投票踢出','kick':'无票踢出','goto':'传送到此人身边','bring':'将此人传送过来'}.get(data.get('operation'),'玩家操作'),'locks':'锁定玩家数值','ammo':'无限子弹','buy':'随时购买','scale':'模型比例','ghost':('幽灵显形' if data.get('enabled') else '幽灵隐身'),'cheats':'作弊开关','heroes':{'kill':'怪物直接死亡','finish':'快速完成当前波','jump':'跳转波次'}.get(data.get('operation'),'洛奇功能'),'heroes_temple':'神殿保护','heroes_auto':'怪物自动死亡','heroes_no_wait':'跳过等待','heroes_upgrade':'全体玩家强化','heroes_model':'玩家模型切换','heroes_custom_damage':'所有玩家自定义伤害','heroes_no_attack':'怪物不攻击玩家','weapon_spawn':'地面刷枪','mutation_add':'增加变异','mutation_read':'读取变异','machine_scan':'刷新机器','machine_reroll':'重抽机器技能','chat':'立即喊话','chat_timer':'定时喊话'}.get(action,action)
                 self.log('已提交：'+(data.get('text','') if action=='command' else title)+'；等待游戏处理。')
             return bool(accepted)
         else:self.log('离线界面检查：未执行游戏操作');return False
@@ -3363,7 +4572,7 @@ class App:
         self.request('stop',require_ready=False)
     def reset_flags(self):
         self.invulnerable_targets.clear();self.ghost_targets.clear()
-        for key in ('hp','money','ammo','scale','buy','chat','round_hp','round_money','invulnerable'):self.vars[key].set(False)
+        for key in ('hp','money','ammo','scale','buy','chat','round_hp','round_money','invulnerable','heroes_auto','heroes_no_wait','heroes_custom_damage','heroes_no_attack'):self.vars[key].set(False)
     def resize_player_columns(self):
         # Measure the actual Tk fonts: translations and Windows scaling both
         # change glyph widths. Keep the complete status text, not an abbreviation.
@@ -3426,6 +4635,12 @@ class App:
                 elif kind=='reset':
                     self.reset_flags();self.checked.clear();self.draw_selection();self.machine_rows=[];self.machine_choice.set('');self.machine_box.configure(values=[])
                     self.bio_status.configure(text='进入生化 ZETA 后可读取次数和机器列表。')
+                    self.heroes_damage_note.configure(text='当前使用原生伤害')
+                    self.update_heroes_models([]);self.update_heroes_levels([]);self.vars['heroes_temple'].set(False);self.heroes_status.configure(text='仅本地房主的洛奇英雄传对局可用。')
+                elif kind=='heroes_models':self.update_heroes_models(data['rows'],data.get('reason',''))
+                elif kind=='heroes_levels':self.update_heroes_levels(data['rows'],data.get('reason',''))
+                elif kind=='heroes_state':
+                    self.heroes_status.configure(text=data['text']);self.vars['heroes_temple'].set(data['protected'])
                 elif kind=='bio_state':self.bio_status.configure(text=data['text'])
                 elif kind=='machines':
                     self.machine_rows=data['rows'];self.machine_box.configure(values=[f'#{r.key.index} · 技能 {r.skill} · '+('已启用' if r.enabled else '未启用') for r in self.machine_rows])
@@ -3461,7 +4676,8 @@ class App:
                     f.write(time.strftime('%Y-%m-%d %H:%M:%S')+(' [错误] ' if error else ' [操作] ')+text.replace('\n',' | ')+'\n')
             except OSError:self.hint.configure(text=preview+'（日志文件无法写入）',fg=RED)
     def collect_settings(self):
-        settings={k:self.vars[k].get() for k in ('hp_value','money_value','head','body','model_scale','scale_uniform','invulnerable_auto','interval','chat_team','bot_count','mutation_count','each_round')}
+        settings={k:self.vars[k].get() for k in ('hp_value','money_value','head','body','model_scale','scale_uniform','invulnerable_auto','interval','chat_team','bot_count','mutation_count','heroes_wave','heroes_seconds','heroes_atk','heroes_hp','heroes_damage_value','each_round')}
+        for field in ('heroes_atk','heroes_hp'):settings[field]=self.language.source(settings[field])
         settings['custom']=[[name.get(),value.get()] for _,name,value in self.custom]
         settings['game_directory']=self.game_directory
         settings.update({key+'_mode':mode for key,mode in self.action_modes.items()})
@@ -3476,7 +4692,7 @@ class App:
             if value!=previous[0]:previous[0]=value;self.schedule_save()
         var.trace_add('write',changed)
     def watch_settings(self):
-        for key in ('hp_value','money_value','head','body','model_scale','scale_uniform','invulnerable_auto','interval','chat_team','bot_count','mutation_count','each_round'):
+        for key in ('hp_value','money_value','head','body','model_scale','scale_uniform','invulnerable_auto','interval','chat_team','bot_count','mutation_count','heroes_wave','heroes_seconds','heroes_atk','heroes_hp','heroes_damage_value','each_round'):
             self.watch_setting(self.vars[key])
         self.chat_text.edit_modified(False)
         def changed(_):
@@ -3500,7 +4716,7 @@ class App:
         except Exception as ex:self.log('自动保存失败：'+str(ex),True);return False
     def load_settings_into_ui(self,settings):
         defaults=dict(hp_value='9999',money_value='99999',head='1',body='1',model_scale='1',scale_uniform=False,
-                      invulnerable_auto=True,interval='10',chat_team='all',bot_count='10',mutation_count='1',each_round=False)
+                      invulnerable_auto=True,interval='10',chat_team='all',bot_count='10',mutation_count='1',heroes_wave='1',heroes_seconds='3',heroes_atk='',heroes_hp='',heroes_damage_value='999999999',each_round=False)
         self.settings_loading=True
         try:
             for key,value in defaults.items():self.vars[key].set(settings.get(key,value))

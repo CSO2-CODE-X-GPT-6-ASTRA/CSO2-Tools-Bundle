@@ -14,6 +14,8 @@ A Windows/Python collection of **CSO2 hacks, cheats and trainers** for host cont
 | Players | Player lists and selection, health, money, invulnerability, teleportation and kick controls. |
 | Match controls | Cheat settings, ammo refill, model scaling, buy restrictions and weapon spawning. |
 | Modes & commands | Mode-specific controls, BOT counts, preset and custom commands, and command search. |
+| Heroes mode | Continuous monster clearing with an adjustable delay, temple protection, wave controls, all-player attack/health upgrades, custom player damage and monster target exclusion. |
+| Hero models & windows | A player/model selection popup with seven HERO presets, individual dropdowns and batch selection; centered popup, freely movable windows and Chinese/English Heroes controls. |
 | Chat & settings | Global or team chat, scheduled messages, saved settings, logs and a Chinese/English interface. |
 | Updates | Automatic checks, in-app downloads or the Release page; OLD is removed after successful startup. |
 
@@ -46,7 +48,7 @@ Use Windows and Python with Tk; BOT Tool requires **64-bit Python 3.11 or later*
 
 Release packages exclude the original user's accounts, passwords, control tokens, saves and historical logs.
 
-**Last updated: 2026-10-09**
+**Last updated: 2026-10-10**
 
 </details>
 
@@ -64,6 +66,8 @@ Release packages exclude the original user's accounts, passwords, control tokens
 | 玩家管理 | 玩家列表与批量选择，血量、金钱、无敌、传送及踢出管理。 |
 | 对局功能 | 作弊开关、弹药补充、模型比例、购买限制与武器生成。 |
 | 模式与指令 | 生化模式相关控制、BOT 数量、常用及自定义指令、命令检索。 |
+| 洛奇英雄传 | 可调倒计时的持续清怪、神殿保护、波次控制、全体玩家攻击力与生命强化、自定义伤害和怪物不攻击玩家。 |
+| HERO 模型与窗口 | 玩家与模型对应弹窗，七个 HERO 快捷按钮、逐人下拉选择及批量应用；弹窗初次居中，窗口可自由拖动，HEROES 功能支持中英文。 |
 | 沟通与配置 | 全体或团队喊话、定时发言、设置保存、日志与中英文界面。 |
 | 更新 | 自动检查、下载更新或打开 Release；新版启动成功后删除 OLD。 |
 
@@ -96,6 +100,6 @@ Release packages exclude the original user's accounts, passwords, control tokens
 
 发布包不包含原使用者的账号、密码、控制令牌、存档和历史日志。
 
-**最后更新：2026-10-09**
+**最后更新：2026-10-10**
 
 </details>
