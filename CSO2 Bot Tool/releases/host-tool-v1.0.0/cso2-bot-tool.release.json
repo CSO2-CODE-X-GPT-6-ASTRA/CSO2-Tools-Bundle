@@ -3,7 +3,7 @@
   "product": "cso2-bot-tool",
   "repository_id": 1410625177,
   "version": "1.0.0",
-  "source_sha256": "e4df9feed0e28268140f700b875c0996fd69418d1c25cefeaeab09db30470a18",
+  "source_sha256": "732adeea0d228eee60c5aa20c6c9965fad18521cfabc2faf1a811ac5fde9d12b",
   "entry": "cso2-bot-tool.pyw",
   "directories": [
     "1 - Shoot Through Data \u5c04\u51fb\u7a7f\u900f\u6570\u636e",
@@ -11,8 +11,8 @@
   ],
   "files": {
     "cso2-bot-tool.pyw": {
-      "size": 4285318,
-      "sha256": "b2d00b2a51f83a1a746f13412d0a5c32045f4fd9d6125dd2d66e25d595800d8f"
+      "size": 4286461,
+      "sha256": "abc092de435ac6655bd1bd6ed0334b8c34dfbac1c383eb2ac0afae6ca0815128"
     },
     "1 - Shoot Through Data \u5c04\u51fb\u7a7f\u900f\u6570\u636e/model_00088a4b42261d56090aea7ff888d7570cde8aae33490bfed5f4c9c485283c4e.bin": {
       "size": 3975,
@@ -17247,15 +17247,15 @@
       "sha256": "79a3c34ba607cc9d68841c4b9aec6d9a640a5367d3e8fbe836116c48e463ab5b"
     }
   },
-  "revision": "47546a350e945127c70ac68d26e93cd9f103f9d2a4c19174efbed86f9f5c2b26",
+  "revision": "fa7f11a8c725690b7013c402866b484365c6ae6b46af2f6e1f71e8f11b0d58b7",
   "archive": {
     "asset": "cso2-bot-tool.update.zip",
-    "size": 71342989,
-    "sha256": "47c6e4a19ca0fee5673993e0c953420f1833c31a5b4093903210b6c11dae1f36"
+    "size": 71344132,
+    "sha256": "5d650106cfc330ece36c10921bef9933982d9023833f6a6329927029fe2b661f"
   },
   "manual_archive": {
     "asset": "cso2-bot-tool.7z",
-    "size": 65839087,
-    "sha256": "dddad8ecac57e84a9d41d85a91ea433f03237f769119bfae422c9caf7be22603"
+    "size": 65839293,
+    "sha256": "5364cc5558b07fbf441e3f489b2c94344531dffcd327946aa210ce9e7ad8e904"
   }
 }
