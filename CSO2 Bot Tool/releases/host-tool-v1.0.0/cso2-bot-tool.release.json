@@ -3,13 +3,17 @@
   "product": "cso2-bot-tool",
   "repository_id": 1410625177,
   "version": "1.0.0",
-  "source_sha256": "fcdaa65ab54cb21fa7d790db222f3f702a4983ff2d6e522a4b0fded32e2a74c9",
+  "source_sha256": "e4df9feed0e28268140f700b875c0996fd69418d1c25cefeaeab09db30470a18",
   "entry": "cso2-bot-tool.pyw",
   "directories": [
     "1 - Shoot Through Data \u5c04\u51fb\u7a7f\u900f\u6570\u636e",
     "2 - Python Libs \u4f9d\u8d56\u5305"
   ],
   "files": {
+    "cso2-bot-tool.pyw": {
+      "size": 4285318,
+      "sha256": "b2d00b2a51f83a1a746f13412d0a5c32045f4fd9d6125dd2d66e25d595800d8f"
+    },
     "1 - Shoot Through Data \u5c04\u51fb\u7a7f\u900f\u6570\u636e/model_00088a4b42261d56090aea7ff888d7570cde8aae33490bfed5f4c9c485283c4e.bin": {
       "size": 3975,
       "sha256": "8d44756269bc4e3ab0ea99b413121edbd6c9c73618320860bc0d1b5ad083e72b"
@@ -17241,21 +17245,17 @@
     "2 - Python Libs \u4f9d\u8d56\u5305/frida-runtime.json": {
       "size": 1627,
       "sha256": "79a3c34ba607cc9d68841c4b9aec6d9a640a5367d3e8fbe836116c48e463ab5b"
-    },
-    "cso2-bot-tool.pyw": {
-      "size": 4276856,
-      "sha256": "04694280a278bcf22afc867c6ba98cc085070650c034bf2dff838a1d3d2ad17f"
     }
   },
-  "revision": "c65232e0782a3922708ac8ce8cc352b3e1899f9129b98c5c6fbd09e4c32c8f29",
+  "revision": "47546a350e945127c70ac68d26e93cd9f103f9d2a4c19174efbed86f9f5c2b26",
   "archive": {
     "asset": "cso2-bot-tool.update.zip",
-    "size": 71334527,
-    "sha256": "5c24fe9144f89a83408db70ae3edc240debdc8078c8156dfe50eeefc23faf02f"
+    "size": 71342989,
+    "sha256": "47c6e4a19ca0fee5673993e0c953420f1833c31a5b4093903210b6c11dae1f36"
   },
   "manual_archive": {
     "asset": "cso2-bot-tool.7z",
-    "size": 65837518,
-    "sha256": "e10f455052e165d37e0a251eeac7f50084c0b89675dec1e038190ab30c19b0b8"
+    "size": 65839087,
+    "sha256": "dddad8ecac57e84a9d41d85a91ea433f03237f769119bfae422c9caf7be22603"
   }
 }
