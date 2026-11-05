@@ -3,7 +3,8 @@
 
 - **CSO2 Host Tool** — Player management, match settings and commands.
 
-  Updated on 2026-10-10:
+  <details>
+  <summary>Updated on 2026-10-10</summary>
 
   - Heroes: continuous monster clearing with an adjustable countdown, temple protection, fast wave completion, wave selection and an option to skip preparation periods.
   - All-player attack and health upgrades, custom player damage against monsters, and monster target exclusion.
@@ -15,7 +16,14 @@
 
   This refresh keeps **v1.0.0**. If you already have v1.0.0, download `cso2-host-tool.pyw` again; the current updater only offers higher version numbers. The download contains empty personal settings.
 
+  </details>
+
 - **CSO2 Bot Tool** — Target display, aiming, firing and penetration assistance.
+
+  **Updated on 2026-11-05:**
+
+  - Automatically restores missing or damaged Frida runtime files, with background checks and clear error messages.
+  - Fixes the countdown policy's “Apply once” click handling and shows progress, success or failure in the popup.
 
   The non-host magic bullet feature is for fun only. Do not enable it for serious matches; it is less accurate than auto-aim.
 
@@ -23,7 +31,7 @@
 
 Local server reference: [CSO2 Master Server — lateleite](https://github.com/lateleite/cso2-master-server).
 
-**Last updated: 2026-10-10**
+**Last updated: 2026-11-05**
 
 </details>
 
@@ -32,7 +40,8 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
 - **CSO2 Host Tool · 房主工具** — 玩家管理、对局设置与指令。
 
-  2026-10-10 更新：
+  <details>
+  <summary>2026-10-10 更新</summary>
 
   - 洛奇英雄传：持续清怪与可调倒计时、神殿保护、快速完成当前波、指定波次，以及跳过准备等待期。
   - 全体玩家攻击力与生命强化、玩家对怪物的自定义伤害，以及怪物不攻击玩家。
@@ -44,7 +53,14 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
   本次保持 **v1.0.0**。已安装 v1.0.0 的用户请重新下载 `cso2-host-tool.pyw`，当前自动更新只提示更高版本号。下载文件中的个人设置为空。
 
+  </details>
+
 - **CSO2 Bot Tool · BOT 辅助工具** — 目标显示、瞄准射击与穿透辅助。
+
+  **2026-11-05 更新：**
+
+  - Frida 依赖文件缺失或损坏时自动恢复，后台持续检查并明确提示错误。
+  - 修复倒计时策略“仅处理本次”的点击处理，弹窗显示处理进度及成功或失败结果。
 
   非房主魔法子弹功能仅娱乐，如果认真对局请勿启用，准度不如自动瞄准。
 
@@ -52,6 +68,6 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
 本地端相关项目：[CSO2 Master Server — lateleite](https://github.com/lateleite/cso2-master-server)。
 
-**最后更新：2026-10-10**
+**最后更新：2026-11-05**
 
 </details>
