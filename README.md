@@ -3,6 +3,8 @@
 <details open>
 <summary><strong>English</strong></summary>
 
+### Install [Python from the official website](https://www.python.org/downloads/) before using these tools
+
 A Windows/Python collection of **CSO2 hacks, cheats and trainers** for host controls, BOT assistance and local-server play. Includes three components: Host Tool, Bot Tool and Local Master Server.
 
 **[Download → Release](https://github.com/CSO2-CODE-X-GPT-6-ASTRA/CSO2-Tools-Bundle/releases/latest)** · [Release notes](RELEASE.md)
@@ -54,6 +56,8 @@ Release packages exclude the original user's accounts, passwords, control tokens
 
 <details open>
 <summary><strong>中文</strong></summary>
+
+### 使用前请先从 [Python 官网](https://www.python.org/downloads/) 下载并安装 Python
 
 面向 Windows 的 **CSO2 修改器、外挂辅助与本地端工具合集**，使用 Python 编写。包含房主工具、BOT 辅助工具和本地主服务端三个组件，按需要分别使用。
 
