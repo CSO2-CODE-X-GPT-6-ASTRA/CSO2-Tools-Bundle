@@ -1,6 +1,8 @@
 <details open>
 <summary><strong>English</strong></summary>
 
+### Install [Python from the official website](https://www.python.org/downloads/) before using these tools
+
 - **CSO2 Host Tool** — Player management, match settings and commands.
 
   <details>
@@ -20,10 +22,17 @@
 
 - **CSO2 Bot Tool** — Target display, aiming, firing and penetration assistance.
 
-  **Updated on 2026-11-05:**
+  **Updated on 2026-11-15:**
+
+  Improved aiming speed and compressed logs.
+
+  <details>
+  <summary>Updated on 2026-11-05</summary>
 
   - Automatically restores missing or damaged Frida runtime files, with background checks and clear error messages.
   - Fixes the countdown policy's “Apply once” click handling and shows progress, success or failure in the popup.
+
+  </details>
 
   The non-host magic bullet feature is for fun only. Do not enable it for serious matches; it is less accurate than auto-aim.
 
@@ -31,12 +40,14 @@
 
 Local server reference: [CSO2 Master Server — lateleite](https://github.com/lateleite/cso2-master-server).
 
-**Last updated: 2026-11-05**
+**Last updated: 2026-11-15**
 
 </details>
 
 <details open>
 <summary><strong>中文</strong></summary>
+
+### 使用前请先从 [Python 官网](https://www.python.org/downloads/) 下载并安装 Python
 
 - **CSO2 Host Tool · 房主工具** — 玩家管理、对局设置与指令。
 
@@ -57,10 +68,17 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
 - **CSO2 Bot Tool · BOT 辅助工具** — 目标显示、瞄准射击与穿透辅助。
 
-  **2026-11-05 更新：**
+  **2026-11-15 更新：**
+
+  改进瞄准速度，对日志进行压缩。
+
+  <details>
+  <summary>2026-11-05 更新</summary>
 
   - Frida 依赖文件缺失或损坏时自动恢复，后台持续检查并明确提示错误。
   - 修复倒计时策略“仅处理本次”的点击处理，弹窗显示处理进度及成功或失败结果。
+
+  </details>
 
   非房主魔法子弹功能仅娱乐，如果认真对局请勿启用，准度不如自动瞄准。
 
@@ -68,6 +86,6 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
 本地端相关项目：[CSO2 Master Server — lateleite](https://github.com/lateleite/cso2-master-server)。
 
-**最后更新：2026-11-05**
+**最后更新：2026-11-15**
 
 </details>

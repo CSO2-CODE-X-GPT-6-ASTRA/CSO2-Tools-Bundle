@@ -12,6 +12,7 @@ on:
       - '.github/workflows/publish-tools.yml'
       - '.github/scripts/publish_tools.py'
       - '.github/scripts/publish_bundle.py'
+      - '.github/scripts/publish_bot_refresh.py'
   workflow_dispatch:
 
 permissions:
@@ -34,4 +35,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TOOL_REPOSITORY_ID: ${{ github.repository_id }}
-        run: python .github/scripts/publish_bundle.py
+          BOT_REFRESH_ONLY: ${{ contains(github.event.head_commit.message, '[bot-release]') }}
+        run: |
+          if [ "$BOT_REFRESH_ONLY" = "true" ]; then
+            python .github/scripts/publish_bot_refresh.py
+          else
+            python .github/scripts/publish_bundle.py
+          fi
