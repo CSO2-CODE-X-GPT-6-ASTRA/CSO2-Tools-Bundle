@@ -22,10 +22,6 @@
 
 - **CSO2 Bot Tool** — Target display, aiming, firing and penetration assistance.
 
-  **Updated on 2026-11-15:**
-
-  Improved aiming speed and compressed logs.
-
   <details>
   <summary>Updated on 2026-11-05</summary>
 
@@ -33,6 +29,10 @@
   - Fixes the countdown policy's “Apply once” click handling and shows progress, success or failure in the popup.
 
   </details>
+
+  **Updated on 2026-11-15:**
+
+  Improved aiming speed and compressed logs.
 
   The non-host magic bullet feature is for fun only. Do not enable it for serious matches; it is less accurate than auto-aim.
 
@@ -68,10 +68,6 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
 - **CSO2 Bot Tool · BOT 辅助工具** — 目标显示、瞄准射击与穿透辅助。
 
-  **2026-11-15 更新：**
-
-  改进瞄准速度，对日志进行压缩。
-
   <details>
   <summary>2026-11-05 更新</summary>
 
@@ -79,6 +75,10 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
   - 修复倒计时策略“仅处理本次”的点击处理，弹窗显示处理进度及成功或失败结果。
 
   </details>
+
+  **2026-11-15 更新：**
+
+  改进瞄准速度，对日志进行压缩。
 
   非房主魔法子弹功能仅娱乐，如果认真对局请勿启用，准度不如自动瞄准。
 

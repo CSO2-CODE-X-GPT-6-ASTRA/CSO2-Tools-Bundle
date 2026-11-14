@@ -1,0 +1,26 @@
+name: Sync release notes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - RELEASE.md
+      - .github/workflows/release-notes.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-tools
+  cancel-in-progress: false
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update current release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit host-tool-v1.0.0 --notes-file RELEASE.md
