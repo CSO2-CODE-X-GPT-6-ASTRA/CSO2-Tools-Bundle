@@ -5,6 +5,8 @@
 
 - **CSO2 Host Tool** — Player management, match settings and commands.
 
+  **2026-11-20:** Added bot skin selection in the local build. The current download does not include this feature yet.
+
   <details>
   <summary>Updated on 2026-10-10</summary>
 
@@ -23,12 +25,7 @@
 - **CSO2 Bot Tool** — Target display, aiming, firing and penetration assistance.
 
   <details>
-  <summary>Updated on 2026-11-05</summary>
-
-  - Automatically restores missing or damaged Frida runtime files, with background checks and clear error messages.
-  - Fixes the countdown policy's “Apply once” click handling and shows progress, success or failure in the popup.
-
-  </details>
+  <summary>Previous Bot Tool updates</summary>
 
   **Updated on 2026-11-15:**
 
@@ -36,11 +33,18 @@
 
   The non-host magic bullet feature is for fun only. Do not enable it for serious matches; it is less accurate than auto-aim.
 
+  **Updated on 2026-11-05:**
+
+  - Automatically restores missing or damaged Frida runtime files, with background checks and clear error messages.
+  - Fixes the countdown policy's “Apply once” click handling and shows progress, success or failure in the popup.
+
+  </details>
+
 - **CSO2 Local Master Server** — Local launch, solo play and save management.
 
 Local server reference: [CSO2 Master Server — lateleite](https://github.com/lateleite/cso2-master-server).
 
-**Last updated: 2026-11-15**
+**Last updated: 2026-11-20**
 
 </details>
 
@@ -50,6 +54,8 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 ### 使用前请先从 [Python 官网](https://www.python.org/downloads/) 下载并安装 Python
 
 - **CSO2 Host Tool · 房主工具** — 玩家管理、对局设置与指令。
+
+  **2026-11-20 更新：** 本地新版新增 BOT 换皮肤机制。当前下载包尚未包含此功能。
 
   <details>
   <summary>2026-10-10 更新</summary>
@@ -69,12 +75,7 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 - **CSO2 Bot Tool · BOT 辅助工具** — 目标显示、瞄准射击与穿透辅助。
 
   <details>
-  <summary>2026-11-05 更新</summary>
-
-  - Frida 依赖文件缺失或损坏时自动恢复，后台持续检查并明确提示错误。
-  - 修复倒计时策略“仅处理本次”的点击处理，弹窗显示处理进度及成功或失败结果。
-
-  </details>
+  <summary>BOT 工具历史更新</summary>
 
   **2026-11-15 更新：**
 
@@ -82,10 +83,17 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
   非房主魔法子弹功能仅娱乐，如果认真对局请勿启用，准度不如自动瞄准。
 
+  **2026-11-05 更新：**
+
+  - Frida 依赖文件缺失或损坏时自动恢复，后台持续检查并明确提示错误。
+  - 修复倒计时策略“仅处理本次”的点击处理，弹窗显示处理进度及成功或失败结果。
+
+  </details>
+
 - **CSO2 Local Master Server · 本地主服务端** — 本地启动、单人玩法与存档管理。
 
 本地端相关项目：[CSO2 Master Server — lateleite](https://github.com/lateleite/cso2-master-server)。
 
-**最后更新：2026-11-15**
+**最后更新：2026-11-20**
 
 </details>
