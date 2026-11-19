@@ -1737,6 +1737,7 @@ class Backend:
         if key=='chat':self.verify_command('say compatibility_probe');return
         if key=='cheats':command_entry(self);self.require_local();self.cheats_value();return
         self.require_local()
+        if key=='bot_skins':HostBotSkins.verify(self);return
         groups={
             'invulnerable':('m_takedamage',),
             'roster':('m_iHealth','m_iMaxHealth','m_lifeState','m_szNetname'),
@@ -1770,6 +1771,7 @@ class Backend:
     def refresh_capabilities(self):
         self.capabilities={key:probe_result(lambda k=key:self.probe_feature(k)) for key in
             ('commands','chat','local_commands','roster','hp','money','ammo','scale','buy','invulnerable','cheats','ghost','mutation','mutation_read','machine','heroes','heroes_upgrade','heroes_model','heroes_custom_damage','heroes_no_attack','weapon_spawn')}
+        self.capabilities['bot_skins']=dict(self.capabilities['roster'])  # Validate the skin catalog on demand.
         return self.capabilities
     def require(self,key):
         status=probe_result(lambda:self.probe_feature(key));self.capabilities[key]=status
@@ -2455,15 +2457,466 @@ def portable_save(path,settings,expected_digest=None):
     try:
         with tempfile.NamedTemporaryFile('wb',prefix='.'+path.stem+'-',suffix='.tmp',dir=path.parent,delete=False) as f:
             temp=Path(f.name);f.write(output.encode('utf-8'));f.flush();os.fsync(f.fileno())
+        if path.read_bytes()!=source:raise RuntimeError('脚本运行期间被其他程序修改；请导出便携副本，避免覆盖修改')
         os.replace(temp,path);temp=None
     finally:
         if temp:temp.unlink(missing_ok=True)
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(output.encode('utf-8')).hexdigest()
 
 def can_set_player_values(player):
     return (player.alive and player.team in (2,3) and
             re.sub(r'[\s_\-]+','',player.name).casefold() not in ('cso2tv','sourcetv','hltv'))
 
+
+def skin_plan_settings(value=None):
+    value=value if isinstance(value,dict) else {}
+    counts=value.get('counts',{});slots=value.get('slots',{});randoms=value.get('random',{})
+    counts=counts if isinstance(counts,dict) else {};slots=slots if isinstance(slots,dict) else {};randoms=randoms if isinstance(randoms,dict) else {}
+    result=dict(enabled=bool(value.get('enabled')),seeded=bool(value.get('seeded')),counts={},slots={},random={})
+    for team in (3,2):
+        count=counts.get(team,counts.get(str(team),10))
+        result['counts'][team]=max(0,min(32,count)) if type(count) is int else 10
+        values=slots.get(team,slots.get(str(team),[]))
+        values=values if isinstance(values,list) else []
+        result['slots'][team]=[v if type(v) is int and -1<=v<=1000000 else None for v in values[:32]]
+        result['slots'][team]+=[None]*(32-len(result['slots'][team]))
+        result['random'][team]=bool(randoms.get(team,randoms.get(str(team),False)))
+    return result
+
+SKIN_TICK_IMPORT = bytes.fromhex('3c6f9a00')
+def skin_spawn_code(control):
+    code=bytes.fromhex('9c6089cebb443322116a015fe863000000619dff2550332211909090909090905589e551ff7510ff750cff7508b844332211ff50109c608b75fcbb443322116a025fe82d000000619d89ec5dc20c0090909090909090909090909090909090909c6089cebb443322116a035fe803000000619dc3837b04010f856305000031c0ba01000000f00fb153380f8551050000ff434c89bb80000000c7838400000000000000c7435000000000c7435400000000c78388000000ffffffffc7838c00000000000000c7839800000000000000c7839c000000feffffffc783a000000000000000837b04010f858e040000ff53442b43480f8f820400008b7b0885ff0f84770400008b431405d0688e0039060f8567040000c78384000000010000008b43188b80a0218d0089437885c00f84490400008b0885c90f843f0400008b531881c2a05112003951180f852d04000083b8ac000000010f8520040000c78384000000020000000fb6ae0102000083ed0283fd010f87030400008d45028983a00000008b531481c254faa500b9010000003932740e83c2104183f94076f3e9da030000894b508b42048943548b43148b907c90c5008b4b78394b7c752085d20f84a4000000837b20007430395320750d8b8af40200003b4b247202eb1e50578b7b3c31c0b980050000fcf3ab5f588b4b78894b7cc743200000000085d2746a81baf402000080969800775e0fb682fc02000083f8017752c7838c0000000100000039532075288b8af4020000394b24751d85c07408837b2c007413eb14837b2c00750e8b8a04030000394b287403ff431c89532089432c8b8af4020000894b248b8a04030000894b2869c50011000001c7897b588b435048c1e00569cd0008000001c803433c89435c393075088b4b54394804741d89308b4b54894804c74010feffffffc74018feffffffc7401cffffffff833f000f8480020000833f030f85f400000069cd00030000034b40894b60578b57086bfa1801cf51b92000000029d16bc90631c0fcf3ab595f31d2c7436400000000c74368000000003b570873678b410885c0745183f840773fc1e0040343140544faa500528b103911752c8b400439410475248b431405d0688e00390275180fb6820102000083e80239e8750a39f27503894b685aeb175ac70100000000c7410800000000837b64007503894b6483c11842eb948b4b6885c975198b4b6485c90f84b601000089318b43548941048b435089410889c82b436031d251b918000000f7f1598d50018993980000008b44871039410c740a89410cc74114ffffffff83c110eb138b4704833f027505b8ffffffff8b4b5c83c11889839c00000083f8fe0f846101000083f8ff0f85d7000000c783840000000300000083bb8c000000000f8483010000c78384000000040000008b531c395104750f8b01e8d101000085d20f85b6000000837f0c000f8458010000817f0c000400000f874b010000894b6cc78390000000ffffffff8b433089c2c1e20d31d089c2c1ea1131d089c2c1e20531d089433031d2f7770c8953708b470c8943748b53708b849790000000e86d01000085d2740d8b4b6c3b01752e898390000000ff43708b570c3953707207c7437000000000ff4b7475c98b839000000085c00f88d00000008b4b6c89018b531c895104eb17c7838400000004000000e81b01000085d20f84ac0000008b7b5cba0100000029ea8d8c9688210000837f10fe74148b113b571074038957088b51083b5714740deb058b118957088b510889570c898388000000c78384000000050000008901c74108ffffffff894710c74714ffffffffff4334eb4ec7838400000006000000eb0ac78384000000070000008b7b5c837f10fe742fba0100000029ea8d8c96882100008b113b571075058b570889118b51083b571475068b570c895108c74710feffffff83bb840000000074538b839400000083e03f6bc0248dbc0300180000fc8b8380000000ab8b8384000000ab8b4350ab8b83a0000000ab8b839c000000ab8b8388000000ab8b8398000000ab8b838c000000ab8b4354abff8394000000ff434cc7433800000000c35157508b53148b927090c50085d2744d8b0a8b7b1881c750543000397968753db90b00000029e96bc90c01ca8b0a8b7a0485c9742839f973243b7a08771f89fa29ca81fa001000007713f7c203000000750b3901740b83c10439f972f531d2eb05ba01000000585f59c3')
+    return code.replace(struct.pack('<I',0x11223344),struct.pack('<I',control)).replace(struct.pack('<I',0x11223350),struct.pack('<I',control+12))
+
+class BotSkinSpawnHook:
+    """Immutable plans, consumed by CCSBot before its native spawn model copy."""
+    def __init__(self,backend):
+        self.b=backend;self.m=backend.mem;self.k=self.m.k;self.server=backend.server
+        self.handle=None;self.address=0;self.installed=False;self.last_config=None;self.needs_sync=False
+        self.buffers=[];self.config_cache={}
+        self.closing=False
+        self.restore_context=None
+        self.event_cursor=0
+        specs={'OpenProcess':(W.HANDLE,[W.DWORD,W.BOOL,W.DWORD]),
+               'VirtualAllocEx':(C.c_void_p,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD,W.DWORD]),
+               'VirtualProtectEx':(W.BOOL,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD,C.POINTER(W.DWORD)]),
+               'FlushInstructionCache':(W.BOOL,[W.HANDLE,C.c_void_p,C.c_size_t]),'GetTickCount':(W.DWORD,[])}
+        for name,(ret,args) in specs.items():fn=getattr(self.k,name);fn.restype=ret;fn.argtypes=args
+        s=self.server
+        HostBotSkins.verify(backend)
+        checks=((s+0x8e68cc,struct.pack('<I',s+0x968080)),
+                (s+0x968080,bytes(12)+struct.pack('<I',s+0xa198f0)),
+                (s+0xa198f8,b'.?AVCCSBot@@\0'),
+                (s+0x5aaad0,bytes.fromhex('56578bf1e8b7010000')),
+                (s+0x5aac90,bytes.fromhex('568bf183becc29000000752a')),
+                (s+0x5aacc6,bytes.fromhex('8bcee82346f7ff')),
+                (s+0x51f2f0,bytes.fromhex('558bec81ecd4000000894dfc')),
+                (s+0x5aa310,bytes.fromhex('8b44240c568bf18d8efc2a0000')),
+                (s+0x5aa4dd,bytes.fromhex('b001c20c00')),
+                (backend.engine+0x1251a0,bytes.fromhex('33c083b9ac000000010f94c0c3')))
+        if any(self.m.read(at,len(value))!=value for at,value in checks):raise NotReady('BOT 出生前选肤入口未验证')
+        self.slots=((s+0x8e6934,s+0x5aaad0,0),(s+0x8e7140,s+0x5aa310,32))
+        if any(self.m.u32(slot)!=original for slot,original,_ in self.slots):raise NotReady('BOT 出生回调已由其他工具占用')
+        # Bind the timer IAT slot to the already-verified binary family.
+        image=backend.verify_file('server.dll')
+        if image.read_rva(0x76616c,4)!=SKIN_TICK_IMPORT:raise NotReady('BOT 选肤计时入口未验证')
+        tick=self.m.u32(s+0x76616c)
+        if not tick:raise NotReady('BOT 选肤计时入口尚未就绪')
+        self.handle=self.k.OpenProcess(0x0438,False,self.m.pid)
+        if not self.handle:raise C.WinError(C.get_last_error())
+        try:
+            self.address=self.allocate(12288);self.control=self.address+2048
+            code=skin_spawn_code(self.control)
+            self.write(self.address,code)
+            header=bytearray(128);header[:4]=b'HSK1'
+            struct.pack_into('<5I',header,12,s+0x5aaad0,s+0x5aa310,s,backend.engine,0)
+            struct.pack_into('<I',header,48,(self.k.GetTickCount()^self.address)|1)
+            struct.pack_into('<3I',header,60,self.control+256,self.control+4352,tick)
+            self.write(self.control,header)
+            if not self.k.FlushInstructionCache(self.handle,self.address,len(code)):raise C.WinError(C.get_last_error())
+        except Exception:self.close(False);raise
+    def allocate(self,size):
+        address=self.k.VirtualAllocEx(self.handle,None,size,0x3000,0x40)
+        if not address or address+size>0xffffffff:raise NotReady('BOT 选肤内存分配失败')
+        self.buffers.append(address);return address
+    def write(self,address,data):
+        data=bytes(data);n=C.c_size_t();buf=C.create_string_buffer(data)
+        if not self.k.WriteProcessMemory(self.handle,address,buf,len(data),C.byref(n)) or n.value!=len(data):raise C.WinError(C.get_last_error())
+    def swap(self,slot,expected,value):
+        old=W.DWORD()
+        if not self.k.VirtualProtectEx(self.handle,slot,4,4,C.byref(old)):raise C.WinError(C.get_last_error())
+        try:
+            if self.m.u32(slot)!=expected:raise NotReady('BOT 出生回调发生变化')
+            self.write(slot,struct.pack('<I',value))
+        finally:
+            unused=W.DWORD()
+            if not self.k.VirtualProtectEx(self.handle,slot,4,old.value,C.byref(unused)):raise C.WinError(C.get_last_error())
+    def configure(self,plan,rules,pending,rows):
+        if self.installed and any(self.m.u32(slot)!=self.address+offset for slot,_,offset in self.slots):
+            self.write(self.control+4,struct.pack('<I',0));self.installed=False
+            raise NotReady('BOT 出生回调发生变化')
+        blob=skin_spawn_config(plan,rules,pending,rows)
+        if blob!=self.last_config:
+            address=self.config_cache.get(blob)
+            if address is None:
+                address=self.allocate(len(blob));self.write(address,blob);self.config_cache[blob]=address
+            # Never rewrite a plan while a game callback can still be reading it.
+            self.write(self.control+8,struct.pack('<I',address));self.last_config=blob;self.needs_sync=True
+        self.write(self.control+72,struct.pack('<I',(self.k.GetTickCount()+5000)&0xffffffff))
+        if not self.installed:
+            try:
+                for slot,original,offset in self.slots:self.swap(slot,original,self.address+offset)
+                self.installed=True
+            except Exception:self.disable();raise
+        self.write(self.control+4,struct.pack('<I',1))
+    def disable(self):
+        if not self.address:return
+        self.write(self.control+4,struct.pack('<I',0))
+        for slot,original,offset in self.slots:
+            if self.m.u32(slot)==self.address+offset:self.swap(slot,self.address+offset,original)
+        self.installed=False
+    def synchronize(self):
+        if not self.needs_sync:return
+        b=self.b;b.require_local()
+        if b.player_queue and not b.player_queue.poll():return
+        b.submit_player_native(lambda remote:skin_spawn_sync_code(self.server,self.address+96));self.needs_sync=False
+    def assignments(self):
+        before=self.m.u32(self.control+76)
+        if before&1:return None
+        raw=self.m.read(self.control+4352,1536)
+        if self.m.u32(self.control+76)!=before:return None
+        return {team:[struct.unpack_from('<3I',raw,(native*32+pos)*24) for pos in range(32)]
+                for native,team in ((0,2),(1,3))}
+    def diagnostic_events(self):
+        """Copy only our own fixed-size decision records, with a consistent sequence."""
+        stages=('','spawn','init','sync')
+        results=('','host_unconfirmed','identity_pending','round_pending','model_unavailable','selected','outside_quota','game_default')
+        before=self.m.u32(self.control+76)
+        if before&1:return []
+        end=self.m.u32(self.control+148)
+        count=(end-self.event_cursor)&0xffffffff
+        if not count:return []
+        raw=self.m.read(self.control+6144,64*36)
+        if self.m.u32(self.control+76)!=before:return []
+        events=[]
+        if count>64:events.append(dict(event='events_lost',count=count-64))
+        for offset in range(min(count,64),0,-1):
+            seq=(end-offset)&0xffffffff
+            stage,result,bot,team,policy,model,position,round_ready,serial=struct.unpack_from('<IIIIiiIII',raw,(seq%64)*36)
+            if not (0<stage<len(stages) and 0<result<len(results) and bot<=64 and team in (0,2,3)
+                    and position<=32 and round_ready<=1 and -2<=policy<=1000000 and -1<=model<=1000000):continue
+            events.append(dict(event=stages[stage],seq=seq,result=results[result],bot=bot,team=team,
+                               policy=policy,model=model,position=position,round_ready=bool(round_ready),_serial=serial))
+        self.event_cursor=end
+        return events
+    def restore(self):
+        errors=[];s=self.server
+        if self.m.u32(self.control+56):return ['BOT 选肤回调仍在完成，原值恢复等待下一次处理']
+        if self.restore_context is not None:
+            current=self.b.current_context()
+            if current is None:return ['等待原对局恢复']
+            if current!=self.restore_context:return []
+        for native,team in ((0,2),(1,3)):
+            for i in range(64):
+                try:
+                    row=struct.unpack('<8I',self.m.read(self.control+256+(native*64+i)*32,32))
+                    address,serial,before,custom,written,written_custom,_,_=row
+                    if not address or written==0xfffffffe:continue
+                    self.b.require_local()
+                    if self.m.read(s+0xa5fa44+(i+1)*16,8)!=struct.pack('<II',address,serial):continue
+                    if self.m.u32(address)!=s+0x8e68d0 or self.m.read(address+0x201,1)!=bytes([team]):continue
+                    offset=0x218c if team==2 else 0x2188
+                    for field,old,value in ((offset,before,written),(offset+8,custom,written_custom)):
+                        if self.m.u32(address+field)==value:self.write(address+field,struct.pack('<I',old))
+                    self.write(self.control+256+(native*64+i)*32+16,struct.pack('<I',0xfffffffe))
+                except Exception as ex:errors.append(str(ex))
+        return errors
+    def close(self,restore=True):
+        if not self.handle:return []
+        if not self.closing:self.restore_context=self.b.context
+        self.closing=True
+        errors=[];keep_handle=restore
+        try:
+            if self.address:
+                self.disable()
+                if restore:
+                    deadline=time.monotonic()+.1
+                    while self.m.u32(self.control+56) and time.monotonic()<deadline:time.sleep(.001)
+                    if self.m.u32(self.control+56):
+                        keep_handle=True;return ['BOT 选肤回调仍在完成，稍后重试恢复']
+            if self.address and restore:errors=self.restore()
+            keep_handle=bool(errors)
+        finally:
+            if not keep_handle:self.k.CloseHandle(self.handle);self.handle=None
+        # Callbacks may already have loaded a target. Keep inert code/config pages
+        # until process exit rather than freeing a possibly in-flight instruction.
+        return errors
+
+def skin_spawn_config(plan,rules,pending,rows):
+    blob=bytearray(0x2200)
+    for native,team in ((0,2),(1,3)):
+        offset=native*0x1100
+        fixed=rules.get(team,pending.get(team))
+        mode=3 if plan['enabled'] else 2 if plan['random'][team] else 1 if fixed is not None else 0
+        pool=sorted({r['id'] for r in rows if r['team']==team and type(r['id']) is int and 0<=r['id']<=1000000})
+        if len(pool)>1024:raise NotReady('BOT 模型目录超过支持范围')
+        values=[-2 if value is None else value for value in plan['slots'][team]]
+        struct.pack_into('<4i',blob,offset,mode,fixed if fixed is not None else -2,plan['counts'][team],len(pool))
+        struct.pack_into('<32i',blob,offset+16,*values)
+        if pool:struct.pack_into('<'+str(len(pool))+'i',blob,offset+144,*pool)
+    return bytes(blob)
+
+def skin_spawn_sync_code(server,apply):
+    code=bytearray(b'\x53\x56')
+    for index in range(1,65):
+        code+=b'\x8b\x0d'+struct.pack('<I',server+0xa5fa44+16*index)
+        code+=bytes.fromhex('85c97407b8')+struct.pack('<I',apply)+bytes.fromhex('ffd0')
+    return bytes(code)+bytes.fromhex('5e5bb801000000c20400')
+
+
+class HostBotSkins:
+    """Local host only. Keep per-BOT spawn choices separate from shared profiles."""
+    def __init__(self,backend):
+        self.reader=backend;self.records={};self.rules={};self.seen={};self.next_scan=0.;self.recheck=0.
+        self.last_roster=None;self.rule_pid=None
+        self.spawn_hook=None;self.spawn_signature=None;self.spawn_rows=[]
+        self.approved_spawn=None
+        self.plan=skin_plan_settings();self.bindings={2:[],3:[]};self.vacated={};self.applied={};self.draws={};self.round_state=None;self.binding_context=None;self.panel_watch=False
+    @property
+    def server(self):return self.reader.server
+    @staticmethod
+    def verify(reader):
+        s=reader.server;m=reader.mem
+        for rva,name,offset in ((0x9f4028,'m_iSelectedClass',0x2188),(0x9f405c,'m_iSelectedCustomSkin',0x2190),
+                                (0x9f40c4,'m_iClass',0x219c)):
+            if m.string(m.u32(s+rva),64)!=name or m.u32(s+rva+4)!=offset:
+                raise RuntimeError('BOT SKIN 字段校验失败')
+        expected=bytes.fromhex('ba04000000c1e2008b45fc8d8c1088210000518b4dfc81c19c210000e80576d8ffeb42ba040000006bc2008b4dfc8d940188210000528b4dfc81c19c210000e8e275d8ff')
+        if m.read(s+0x51f33a,len(expected))!=expected:raise RuntimeError('BOT 出生选肤路径未验证')
+
+    def catalog(self):
+        import csv,io
+        r=self.reader;m=r.mem;s=self.server
+        manager=m.u32(s+0xc59070);lookup=m.u32(m.u32(manager)+0x68)
+        expected=bytes.fromhex('8b44240456578bf983f80177358b74241083fe02772c8b54241485d2782483c0038d0c4603c88d04498d0c878b41042b01c1f8023bd07d0a8b015f5e8b0490c20c005f33c05ec20c00')
+        if lookup!=r.engine+0x305450 or m.read(lookup,len(expected))!=expected:
+            raise RuntimeError('原生 SKIN 列表未验证')
+        allowed={}
+        for team,native in ((2,2),(3,1)):
+            start,end,capacity=struct.unpack('<III',m.read(manager+(9+native)*12,12))
+            if not start or not start<=end<=capacity or (end-start)%4 or end-start>4096:
+                raise RuntimeError('原生 SKIN 列表异常')
+            allowed[team]=set(struct.unpack('<'+'i'*((end-start)//4),m.read(start,end-start)))
+        return [row for row in self.file_catalog(r.game) if row['id'] in allowed.get(row['team'],set())]
+    @staticmethod
+    def file_catalog(game):
+        import csv,io
+        path=Path(game)/'custom/scripts/characters.csv'
+        if path.stat().st_size>2_000_000:raise RuntimeError('角色目录过大')
+        lines=path.read_text(encoding='utf-8-sig').splitlines()
+        start=next(i for i,line in enumerate(lines) if line.startswith('resname,classid,'))
+        result=[]
+        for row in csv.DictReader(io.StringIO('\n'.join(lines[start:]))):
+            try:
+                skin=int(row['classid']);team={1:3,2:2}.get(int(row['team']))
+                if row.get('mod')!='0' or team is None:continue
+                model=row['worldmodel'].replace('\\','/').strip()
+                if not model.lower().startswith('models/player/') or not model.lower().endswith('.mdl'):continue
+                result.append(dict(id=skin,team=team,name=row['resname'],model=model))
+            except (KeyError,TypeError,ValueError):continue
+        return result
+    def player(self,index):
+        if not 1<=index<=64:raise ValueError('BOT 编号范围 1～64')
+        m=self.reader.mem;entry=self.server+0xa5fa44+index*16
+        p,serial=struct.unpack('<II',m.read(entry,8))
+        if not p or m.string(m.u32(p+0x70),32)!='player':return None
+        vtable=m.u32(p);locator=m.u32(vtable-4);typeinfo=m.u32(locator+12)
+        if m.string(typeinfo+8,64)!='.?AVCCSBot@@':return None
+        return dict(index=index,address=p,serial=serial,team=m.read(p+0x201,1)[0],
+                    current=m.i32(p+0x219c),selected=list(struct.unpack('<2i',m.read(p+0x2188,8))))
+
+    def begin(self):
+        b=self.reader;b.require('bot_skins')
+        if b.context is None or b.current_context()!=b.context:raise NotReady('对局已变化')
+    def rows(self):
+        self.begin()
+        return self.catalog()
+    def checked(self,key,team=None):
+        b=self.reader
+        if key.epoch!=b.epoch or key.map_name!=b.map_name or b.current_context()!=b.context:
+            raise NotReady('对局已变化')
+        if key.index==b.local_index:return None
+        row=self.player(key.index)
+        return row if row and (row['address'],row['serial'])==(key.address,key.serial) and (team is None or row['team']==team) else None
+    def batch(self,choices,players,completed=None):
+        allowed={(r['team'],r['id']) for r in self.rows()}
+        if not choices or not set(choices)<={2,3} or any((t,s) not in allowed for t,s in choices.items()):
+            raise NotReady('所选模型不属于该阵营')
+        totals={t:0 for t in choices};errors=[];b=self.reader;m=b.mem
+        for player in players:
+            team=player.team;key=player.key
+            if team not in choices or player.local:continue
+            try:
+                b.require_local()
+                if self.checked(key,team) is None:continue
+                slot=0 if team==3 else 4;skin=choices[team]
+                for offset,want in ((0x2190+slot,-1),(0x2188+slot,skin)):
+                    if self.checked(key,team) is None:raise PlayerUnavailable('BOT 已变化')
+                    address=key.address+offset;before=m.i32(address);tag=(key,offset)
+                    if before!=want:
+                        old=self.records.get(tag)
+                        self.records[tag]=(old[0] if old and old[1]==before else before,want)
+                        m.write(address,struct.pack('<i',want))
+                    if m.i32(address)!=want:raise NotReady('SKIN 设置未写入')
+                if self.checked(key,team) is None:raise PlayerUnavailable('BOT 已变化')
+                totals[team]+=1
+                if completed is not None:completed.add((key,team,player.alive))
+            except Exception as ex:
+                errors.append(f'#{key.index}: {ex}')
+                if b.current_context()!=b.context:break
+        counts='，'.join(f'{"CT" if t==3 else "T"}: {n}' for t,n in totals.items())
+        return counts+' · 下次出生生效'+(('；未完成 '+str(len(errors))+'：'+errors[0]) if errors else '')
+    def set_rule(self,team,skin,players):
+        if team not in (2,3):raise NotReady('未知阵营')
+        if skin is None:
+            self.rules.pop(team,None);self.seen.pop(team,None)
+            if not self.rules:self.rule_pid=None
+            return '已停止持续应用'
+        done=set();text=self.batch({team:skin},players,done)
+        self.rules[team]=skin;self.seen[team]=done;self.applied.clear();self.last_roster=None
+        self.rule_pid=self.reader.mem.pid
+        now=time.monotonic();self.next_scan=now+.5
+        if not self.recheck:self.recheck=now+30.
+        return text
+    def maintain(self,players):
+        if not self.active() and not self.panel_watch:return
+        if self.spawn_hook is None:
+            if self.active():raise NotReady('等待 BOT 出生前分配器就绪')
+            self.sync_bindings(players);return
+        self.spawn_hook.synchronize()
+        if not self.plan['enabled']:
+            self.sync_bindings(players);return
+        bindings=self.spawn_hook.assignments()
+        if bindings is None:return
+        valid={(p.key.address,p.key.serial,p.key.index):p.key for p in players if not p.local}
+        self.bindings={team:[valid.get(tuple(row)) for row in bindings[team][:self.plan['counts'][team]]] for team in (2,3)}
+    def desired_spawn(self,pending=None):
+        return (repr(self.plan),tuple(sorted(self.rules.items())),tuple(sorted((pending or {}).items())))
+    def spawn_ready(self,pending=None):
+        return bool(self.spawn_hook and self.spawn_hook.installed and not self.spawn_hook.closing
+                    and self.approved_spawn==self.desired_spawn(pending))
+    def prepare_spawn(self,pending=None):
+        b=self.reader;pending=pending or {}
+        self.approved_spawn=None
+        if self.spawn_hook and (self.spawn_hook.m is not b.mem or self.spawn_hook.server!=b.server):
+            self.close_spawn(False)
+        if not b.mem or not b.server:return False
+        if self.spawn_hook and self.spawn_hook.closing:
+            errors=self.close_spawn()
+            if errors:raise NotReady(errors[0])
+        if not self.active() and not pending:
+            errors=self.close_spawn()
+            if errors:raise NotReady(errors[0])
+            return False
+        b.require_local()
+        signature=self.desired_spawn(pending)
+        if signature!=self.spawn_signature or self.spawn_hook is None:
+            if self.spawn_hook and self.spawn_hook.installed:
+                self.spawn_hook.write(self.spawn_hook.control+4,struct.pack('<I',0))
+            self.spawn_rows=self.file_catalog(b.game);self.spawn_signature=signature
+        if self.spawn_hook is None:self.spawn_hook=BotSkinSpawnHook(b)
+        self.spawn_hook.configure(self.plan,self.rules,pending,self.spawn_rows)
+        self.approved_spawn=signature
+        return True
+    def close_spawn(self,restore=True):
+        self.approved_spawn=None
+        hook=self.spawn_hook
+        if hook is None:return []
+        try:return hook.close(restore)
+        finally:
+            if hook.handle is None:self.spawn_hook=None;self.spawn_signature=None
+    def configure_plan(self,value):
+        new=skin_plan_settings(value)
+        if new!=self.plan:
+            self.plan=new;self.applied.clear();self.last_roster=None;self.next_scan=0.
+    def reset_assignments(self,clear_plan=False):
+        if clear_plan:self.plan=skin_plan_settings(dict(self.plan,enabled=False,random={}))
+        self.bindings={2:[],3:[]};self.vacated.clear();self.applied.clear();self.draws.clear()
+        self.round_state=None;self.binding_context=None;self.last_roster=None;self.next_scan=0.
+    def active(self):
+        return self.plan['enabled'] or bool(self.rules) or any(self.plan['random'].values())
+    def sync_bindings(self,players):
+        b=self.reader;context=(b.epoch,b.map_name)
+        if self.binding_context!=context:
+            self.reset_assignments();self.binding_context=context
+        # Preserve occupied positions even if an entity is temporarily not ready;
+        # only the fresh roster can prove that its old identity has left.
+        roster={p.key:p for p in players if not p.local and p.team in (2,3)}
+        verified={}
+        for p in roster.values():
+            if self.checked(p.key,p.team) is not None:verified[p.key]=p
+        for team in (3,2):
+            count=self.plan['counts'][team];old=self.bindings[team]
+            slots=(old+[None]*count)[:count]
+            for pos,key in enumerate(slots):
+                if key is not None and (key not in roster or roster[key].team!=team):
+                    self.vacated[team,pos]=key.index;slots[pos]=None
+            occupied=set(slots)
+            for p in sorted(verified.values(),key=lambda p:p.key.index):
+                if p.team!=team or p.key in occupied:continue
+                empty=[i for i,k in enumerate(slots) if k is None]
+                if not empty:break
+                pos=next((i for i in empty if self.vacated.get((team,i))==p.key.index),empty[0])
+                slots[pos]=p.key;occupied.add(p.key);self.vacated.pop((team,pos),None)
+            self.bindings[team]=slots
+        valid=set(roster)
+        self.records={tag:value for tag,value in self.records.items() if tag[0] in valid}
+        self.applied={key:value for key,value in self.applied.items() if key in valid}
+        return verified
+    def assignment_view(self):
+        return {t:[dict(position=i+1,index=k.index if k else None,skin=self.applied.get(k,(None,None))[0])
+                   for i,k in enumerate(self.bindings[t])] for t in (3,2)}
+    def advance_random_round(self):
+        sample=self.reader.round_sample();old=self.round_state
+        changed=(old is None or sample[0]!=old[0] or sample[1]!=old[1] or
+                 (sample[3] and not old[3]) or (not sample[3] and not old[3] and sample[2]!=old[2]))
+        if changed:
+            self.draws={key:(value[0],False) for key,value in self.draws.items()}
+            self.applied.clear();self.next_scan=0.
+        self.round_state=sample
+    def random_skin(self,token,pool):
+        import random
+        previous=self.draws.get(token)
+        if previous and previous[1] and previous[0] in pool:return previous[0]
+        options=[v for v in pool if not previous or v!=previous[0]] or pool
+        if not options:raise NotReady('该阵营没有可用模型')
+        skin=random.choice(options);self.draws[token]=(skin,True);return skin
+    def release_players(self,keys):
+        errors=[];m=self.reader.mem
+        for tag,(before,written) in list(self.records.items()):
+            key,offset=tag
+            if key not in keys:continue
+            try:
+                self.reader.require_local()
+                if self.checked(key) is not None and m.i32(key.address+offset)==written:
+                    m.write(key.address+offset,struct.pack('<i',before))
+                    if m.i32(key.address+offset)!=before:raise NotReady('SKIN 原值仍待恢复')
+                self.records.pop(tag,None);self.applied.pop(key,None)
+            except Exception as ex:errors.append(str(ex))
+        return errors
+    def restore(self):
+        errors=[]
+        if not self.records:return errors
+        self.begin();m=self.reader.mem
+        for tag,(before,written) in list(self.records.items()):
+            key,offset=tag
+            try:
+                if self.checked(key) is not None and m.i32(key.address+offset)==written:
+                    m.write(key.address+offset,struct.pack('<i',before))
+                    if m.i32(key.address+offset)!=before:raise NotReady('SKIN 原值仍待恢复')
+                self.records.pop(tag,None)
+            except Exception as ex:errors.append(str(ex))
+        return errors
 
 class Controls:
     """Identity-bound locks. Disable restores limits/scale, never old health or cash."""
@@ -2471,11 +2924,13 @@ class Controls:
         self.b=backend;self.caps=caps;self.keys=[];self.hp=None;self.money=None;self.ammo=False;self.scale=None;self.saved={};self.buy=False;self.buy_saved={}
         self.invulnerable=False;self.damage_saved={};self.buy_time_active=False
         self.ghost=False;self.ghost_keys=set();self.ghost_saved={};self.ghost_next_at=0.
+        self.ghost_manual=set();self.ghost_skip=set()
         self.invulnerable_keys=[];self.invulnerable_auto=True;self.invulnerable_done=set()
     def disable_unavailable(self):
         for key in ('hp','money','ammo','scale','buy','invulnerable','ghost'):
             if not self.b.capabilities.get(key,{}).get('available',False):
                 setattr(self,key,False if key in ('ammo','buy','invulnerable','ghost') else None)
+                if key=='ghost':self.ghost_manual.clear();self.ghost_skip.clear()
     def remember(self,key,field,size):
         self.b.validate(key)  # Recheck identity before reading an old snapshot's address.
         record=(key,field)
@@ -2530,10 +2985,6 @@ class Controls:
         self.saved={record:value for record,value in self.saved.items() if record[0] in valid}
         self.buy_saved={key:value for key,value in self.buy_saved.items() if key in valid}
         self.damage_saved={key:value for key,value in self.damage_saved.items() if key in valid}
-        ghost_keys={p.key for p in players if p.team==2}
-        self.ghost_keys.intersection_update(ghost_keys)
-        if self.ghost and not self.ghost_keys:self.ghost=False
-        self.ghost_saved={key:value for key,value in self.ghost_saved.items() if key in ghost_keys}
         self.invulnerable_keys=[key for key in self.invulnerable_keys if key in valid]
         self.invulnerable_done.intersection_update(valid)
         count=0
@@ -2548,17 +2999,9 @@ class Controls:
             self.ghost_next_at=time.monotonic()+.2
             self.b.require_ghost()
             for key,player in live.items():
-                if player.team!=2 or key not in self.ghost_keys:continue
+                if not self.eligible_ghost(player) or key in self.ghost_skip:continue
                 try:
-                    self.b.validate(key)
-                    original=self.b.mem.read(key.address+0x12ac,7)
-                    if original!=GHOST_VISIBLE:
-                        fade=struct.unpack_from('<f',original)[0]
-                        if not math.isfinite(fade):raise NotReady('幽灵透明度参数异常')
-                        # A native respawn/reset replaces the prior round's parameters.
-                        # Preserve that new baseline before applying visibility again.
-                        self.ghost_saved[key]=original
-                        self.b.set_ghost_params(key,GHOST_VISIBLE)
+                    self.reveal_ghost(key);self.ghost_keys.add(key)
                     count+=1
                 except PlayerUnavailable:continue
         for key in self.keys:
@@ -2595,6 +3038,12 @@ class Controls:
             except PlayerUnavailable:continue
         return count
     def step_isolated(self,players):
+        if self.ghost or self.ghost_saved or self.ghost_manual or self.ghost_skip:
+            ghosts={p.key for p in players if p.team==2}
+            live={p.key for p in players if p.team==2 and p.alive}
+            self.ghost_keys.intersection_update(ghosts);self.ghost_manual.intersection_update(live)
+            self.ghost_skip.intersection_update(live)
+            self.ghost_saved={key:v for key,v in self.ghost_saved.items() if key in ghosts}
         features=('hp','money','ammo','scale','buy','invulnerable','ghost');values={key:getattr(self,key) for key in features};errors=[]
         try:
             for key in features:
@@ -2635,22 +3084,32 @@ class Controls:
             except Exception as ex:errors.append(str(ex))
             else:self.ghost_saved.pop(key,None)
         return errors
-    def configure_ghost(self,keys,enabled):
+    @staticmethod
+    def eligible_ghost(player):
+        return player.alive and player.team==2 and re.sub(r'[\s_\-]+','',player.name).casefold() not in ('cso2tv','sourcetv','hltv')
+    def reveal_ghost(self,key):
+        self.b.validate(key)
+        original=self.b.mem.read(key.address+0x12ac,7)
+        if original!=GHOST_VISIBLE:
+            if not math.isfinite(struct.unpack_from('<f',original)[0]):raise NotReady('幽灵透明度参数异常')
+            self.ghost_saved[key]=original
+            self.b.set_ghost_params(key,GHOST_VISIBLE)
+    def toggle_all_ghosts(self):
+        if not self.ghost:
+            self.b.require_ghost();self.ghost=True;self.ghost_next_at=0.;self.ghost_skip.clear()
+        else:
+            self.ghost=False;self.ghost_manual.clear();self.ghost_skip.clear();self.ghost_keys.clear()
+            # Publish the restoring state; the same worker tick restores all owned values.
+    def manual_ghost(self,key,enabled):
         self.b.require_ghost()
-        targets=set()
-        for key in keys:
-            try:player=self.b.validate(key,False)
-            except PlayerUnavailable:continue
-            if player.alive and player.team==2 and re.sub(r'[\s_\-]+','',player.name).casefold() not in ('cso2tv','sourcetv','hltv'):
-                targets.add(key)
-        if not targets:raise NotReady('请选择存活的 T 阵营幽灵')
+        if not self.eligible_ghost(self.b.validate(key,False)):raise PlayerUnavailable('请选择存活的 T 阵营幽灵')
         if enabled:
-            self.ghost_keys.update(targets);self.ghost_next_at=0.
-        else:self.ghost_keys.difference_update(targets)
-        self.ghost=bool(self.ghost_keys)
-        errors=[] if enabled else self.restore_ghost(targets)
-        if errors:raise RuntimeError('幽灵原参数仍待恢复，将继续重试：'+errors[0])
-        return len(targets)
+            self.reveal_ghost(key);self.ghost_manual.add(key);self.ghost_skip.discard(key)
+        else:
+            self.ghost_manual.discard(key);self.ghost_keys.discard(key)
+            if self.ghost:self.ghost_skip.add(key)
+            errors=self.restore_ghost({key})
+            if errors:raise NotReady(errors[0])
     def restore_buy(self):
         errors=self.restore_buy_time()
         for key,before in list(self.buy_saved.items()):
@@ -2683,12 +3142,12 @@ class Controls:
         if not self.buy:errors+=self.restore_buy()
         if not self.invulnerable:errors+=self.restore_invulnerability()
         if not self.ghost:self.ghost_keys.clear()
-        errors+=self.restore_ghost(set(self.ghost_saved)-self.ghost_keys)
+        errors+=self.restore_ghost(set(self.ghost_saved)-self.ghost_keys-self.ghost_manual)
         return errors
     def stop(self,restore=True):
         self.hp=self.money=self.scale=None;self.ammo=False;self.buy=False;self.invulnerable=False;self.ghost=False;self.ghost_next_at=0.;self.keys=[]
         self.invulnerable_keys=[];self.invulnerable_done.clear()
-        self.ghost_keys.clear()
+        self.ghost_keys.clear();self.ghost_manual.clear();self.ghost_skip.clear()
         errors=self.restore() if restore else []
         if restore:errors+=self.restore_buy();errors+=self.restore_invulnerability();errors+=self.restore_ghost()
         if not restore:
@@ -2737,22 +3196,90 @@ class RoundSettings:
                 self.jobs.pop(field,None);messages.append(f'每局设置 {field} 已停止：{ex}')
         return messages
 
+class RoundTeleports:
+    """Current-map identities only; submit each direction/target once per round."""
+    def __init__(self,backend,emit,clock=time.monotonic):
+        self.b=backend;self.emit=emit;self.clock=clock;self.preferences={}
+        self.sample=None;self.ready_at=0.;self.done=set();self.pending=None;self.error=''
+    def reset(self,keep=False,retain_round=False):
+        if not keep:self.preferences={}
+        if not retain_round:self.sample=None;self.ready_at=0.;self.done.clear()
+        self.pending=None;self.error=''
+    def configure(self,preferences):
+        self.preferences=preferences
+    def enabled(self,action):return bool(self.preferences.get('modes',{}).get(action))
+    def wait_message(self,message):
+        if message!=self.error:self.emit('log',text='每局传送等待：'+message)
+        self.error=message
+    def targets(self,players,action):
+        current={p.key:p for p in players}
+        return [(key,current[key]) for key in self.preferences.get('keys',{}).get(action,[]) if key in current]
+    def step(self,players):
+        if self.pending or not any(self.enabled(a) for a in ('goto','bring')):return None
+        try:
+            self.b.require_local()
+            sample=self.b.round_sample();old=self.sample
+            changed=(old is None or sample[0]!=old[0] or sample[1]!=old[1] or
+                     (sample[3] and not old[3]) or (not sample[3] and not old[3] and sample[2]!=old[2]))
+            if changed:self.done.clear();self.ready_at=self.clock()+.25
+            self.sample=sample
+            if self.clock()<self.ready_at:return None
+            local=next((p for p in players if p.local and p.alive and p.team in (2,3)),None)
+            if local is None:return None
+            self.b.validate(local.key,True);waiting=False
+            for action in ('goto','bring'):
+                if not self.enabled(action) or (action=='goto' and ('goto',None) in self.done):continue
+                for ordinal,(mark,player) in enumerate(self.targets(players,action)):
+                    token=(action,None if action=='goto' else mark)
+                    if token in self.done or player.local or not player.alive or player.team not in (2,3):continue
+                    if re.sub(r'[\s_\-]+','',player.name).casefold() in ('cso2tv','sourcetv','hltv'):continue
+                    try:
+                        self.b.validate(player.key,True)
+                        if self.b.current_context()!=self.b.context or self.b.round_sample()!=sample:return None
+                        # The existing native backend remains the only transport.
+                        self.b.player_operation(action,player.key,ordinal)
+                    except Exception as ex:
+                        self.wait_message(str(ex));waiting=True
+                        if self.b.player_queue and self.b.player_queue.pending:
+                            self.done.add(token);self.pending=(action,player.key);return self.pending
+                        continue
+                    # Reserve after submission. An uncertain receipt must never
+                    # replay a displacement that the game may already have made.
+                    self.done.add(token);self.pending=(action,player.key)
+                    self.error=''
+                    self.emit('log',text='每局传送已入队：#'+str(player.key.index))
+                    return self.pending
+            if not waiting:self.error=''
+        except Exception as ex:
+            self.wait_message(str(ex))
+        return None
+
 class Worker(threading.Thread):
     def __init__(self,events,caps):
         super().__init__(name='CSO2 host worker',daemon=True)
         self.events=events;self.requests=queue.Queue(maxsize=128);self.quit=threading.Event();self.b=Backend();self.controls=Controls(self.b,caps);self.request_lock=threading.Lock();self.request_generation=0
         self.players=[];self.chat=None;self.last_context=None;self.tick_error='';self.last_ui=0;self.bio_pending=None;self.restore_error='';self.command_watch=[];self.bot_stop_pending=None
         self.teleport_jobs=[];self.teleport_active=None
+        self.round_teleports=RoundTeleports(self.b,self.emit)
         self.heroes=HeroesControls(self.b,self.emit);self.combat=HeroesCombatControls(self.b,self.emit);self.ground_spawn_pending=None
         self.each_round=False;self.auto_paused=False;self.cheats_desired=False;self.cheats_applied=None;self.cheats_next_at=0.;self.cheats_auto_error=''
         self.feature_preferences={};self.features_applied=set();self.features_round=None
         self.round_settings=RoundSettings(self.b)
+        self.bot_skins=HostBotSkins(self.b);self.skin_restore_pending=False
+        self.ghost_watch=False;self.skin_once={};self.host_watch_error={};self.skin_plan_revision=0
+        self.skin_observations={}
+        self.skin_trace_hook=None
+        self.skin_trace_state=None
+        self.skin_trace_error=False
         self.auto_connect=False;self.connection_game=None;self.connection_generation=0
         self.next_connect=0.;self.connect_error='';self.retry_interval=1.5
         self.next_candidate_check=0.
     def emit(self,kind,**data):self.events.put((kind,data))
     def emit_flags(self):
-        self.emit('ghost_targets',keys=list(self.controls.ghost_keys) if self.controls.ghost else [])
+        self.emit_host_watch()
+        c=self.controls
+        self.emit('ghost_targets',keys=list(c.ghost_keys|c.ghost_manual),running=c.ghost,
+                  restoring=bool(c.ghost_saved.keys()-c.ghost_keys-c.ghost_manual))
         self.emit('flags',heroes_temple=self.heroes.protected)
         self.heroes.flags();self.combat.flags()
         self.emit('flags',hp=self.controls.hp is not None,money=self.controls.money is not None,invulnerable=self.controls.invulnerable,ammo=self.controls.ammo,scale=self.controls.scale is not None,buy=self.controls.buy,chat=self.chat is not None,round_hp='hp' in self.round_settings.jobs,round_money='money' in self.round_settings.jobs)
@@ -2760,7 +3287,7 @@ class Worker(threading.Thread):
         with self.request_lock:
             if action in ('stop','disconnect','connect','reset_defaults'):
                 self.request_generation+=1
-                if action in ('stop','disconnect'):self.auto_connect=False
+                if action in ('stop','disconnect'):self.auto_connect=False;self.auto_paused=True
                 while True:
                     try:self.requests.get_nowait()
                     except queue.Empty:break
@@ -2768,7 +3295,16 @@ class Worker(threading.Thread):
             try:self.requests.put_nowait((action,data));return True
             except queue.Full:
                 self.emit('error',text='待执行操作已满，本次点击未提交；请等待或点击停止');self.emit_flags();return False
-    def reset(self,restore=True):
+    def reset(self,restore=True,keep_skin_rules=False,keep_teleport_rules=False):
+        self.round_teleports.reset(keep_teleport_rules,restore and keep_teleport_rules)
+        if not keep_skin_rules:self.ghost_watch=False;self.skin_once.clear()
+        self.host_watch_error.clear()
+        skins=self.bot_skins
+        if not keep_skin_rules:
+            for error in skins.close_spawn(restore):self.emit('error',text=error)
+        if not keep_skin_rules:skins.rules.clear();skins.rule_pid=None
+        skins.reset_assignments(clear_plan=not keep_skin_rules)
+        skins.seen.clear();skins.last_roster=None;skins.next_scan=skins.recheck=0.;self.skin_error=''
         self.combat.close();self.heroes.reset();self.ground_spawn_pending=None
         self.round_settings.clear()
         self.teleport_jobs.clear();self.teleport_active=None;self.cheats_applied=None
@@ -2777,8 +3313,119 @@ class Worker(threading.Thread):
             try:self.b.player_queue.close()
             except Exception as ex:self.emit('error',text='玩家操作已停止：'+str(ex))
             finally:self.b.player_queue=None
-        self.chat=None;self.bio_pending=None;self.bot_stop_pending=None;errors=self.controls.stop(restore);self.emit('reset')
+        self.chat=None;self.bio_pending=None;self.bot_stop_pending=None;errors=self.controls.stop(restore)
+        self.emit('reset',keep_teleports=keep_teleport_rules);self.emit_host_watch()
+        if not keep_teleport_rules:self.skin_observations.clear()
+        if restore and self.bot_skins.records and not (keep_skin_rules and skins.active()):
+            try:errors+=self.bot_skins.restore()
+            except Exception as ex:errors.append(str(ex))
+        elif not restore:self.bot_skins.records.clear()
+        self.skin_restore_pending=bool(self.bot_skins.records) and not (keep_skin_rules and skins.active())
         if errors:self.emit('log',text='部分临时值尚未恢复，保持同一对局时将重试：'+errors[0])
+    def host_preferences(self):
+        return dict(ghost=self.ghost_watch,skins=dict(self.bot_skins.rules),skin_plan=skin_plan_settings(self.bot_skins.plan))
+    def configure_host_watch(self,prefs):
+        self.ghost_watch=bool(prefs.get('ghost',False))
+        rules=prefs.get('skins',{})
+        self.bot_skins.rules={int(t):s for t,s in rules.items() if str(t) in ('2','3') and type(s) is int and 0<=s<=1000000} if isinstance(rules,dict) else {}
+        self.bot_skins.seen.clear();self.bot_skins.last_roster=None;self.bot_skins.next_scan=0.
+        self.bot_skins.configure_plan(prefs.get('skin_plan'))
+    def emit_host_watch(self):
+        self.emit('host_watch',preferences=self.host_preferences(),pending=dict(self.skin_once),assignments=self.bot_skins.assignment_view(),plan_revision=self.skin_plan_revision,spawn_ready=self.bot_skins.spawn_ready(self.skin_once))
+    def collect_skin_events(self):
+        hook=self.bot_skins.spawn_hook
+        if hook is not self.skin_trace_hook:
+            self.skin_observations.clear()
+            self.skin_trace_hook=hook
+            if hook:self.emit('skin_trace',record=dict(event='allocator_start'))
+        if not hook:return
+        now=time.monotonic()
+        for row in hook.diagnostic_events():
+            serial=row.pop('_serial',None)
+            self.emit('skin_trace',record=row)
+            if row['event']=='spawn' and row.get('bot'):
+                index=row['bot']
+                self.skin_observations.pop(index,None)
+                if row['result']=='selected':
+                    self.skin_observations[index]=(row['seq'],serial,row['team'],row['model'],now+5.)
+            elif row['event']=='init' and row.get('result')=='selected' and row['bot'] not in self.skin_observations:
+                self.skin_observations[row['bot']]=(row['seq'],serial,row['team'],row['model'],now+5.)
+    def observe_skin_models(self,players):
+        if not self.skin_observations:return
+        now=time.monotonic()
+        roster={p.key.index:p for p in players if not p.local}
+        for index,(seq,serial,team,expected,deadline) in list(self.skin_observations.items()):
+            player=roster.get(index)
+            if player and (player.key.serial!=serial or player.team!=team):
+                del self.skin_observations[index];continue
+            current=None
+            if player:
+                try:
+                    self.b.require_local()
+                    row=self.bot_skins.checked(player.key,team)
+                    if row:current=row['current']
+                except (OSError,RuntimeError,ValueError):pass
+            if current!=expected and now<deadline:continue
+            self.emit('skin_trace',record=dict(event='model_readback',seq=seq,bot=index,team=team,expected=expected,current=current))
+            del self.skin_observations[index]
+    def skin_file_rows(self,game=None):
+        # Look only for this technical file in the chosen/connected game and adjacent package roots.
+        explicit=game or self.connection_game
+        roots=[Path(explicit)] if explicit else []
+        if not roots:
+            connected=getattr(self.b,'game',None)
+            if connected:roots.append(Path(connected))
+            folder=Path(__file__).resolve().parent
+            roots.extend((folder,*list(folder.parents)[:2]))
+        for folder in roots:
+            for candidate in (folder,folder/'cso2'):
+                if (candidate/'custom/scripts/characters.csv').is_file():return HostBotSkins.file_catalog(candidate)
+        raise NotReady('请先选择含角色目录的游戏目录')
+    def advance_host_watch(self,players):
+        if self.auto_paused:return
+        c=self.controls
+        if not self.ghost_watch and c.ghost:c.toggle_all_ghosts()
+        if self.ghost_watch and not c.ghost and self.b.capabilities.get('ghost',{}).get('available'):
+            try:c.toggle_all_ghosts();self.host_watch_error.pop('ghost',None)
+            except Exception as ex:self.host_watch_wait('ghost',str(ex))
+        if self.skin_restore_pending or not self.b.capabilities.get('bot_skins',{}).get('available'):return
+        if self.bot_skins.plan['enabled']:return
+        for team,skin in list(self.skin_once.items()):
+            try:
+                self.bot_skins.begin()
+                targets=[p for p in players if p.team==team and not p.local and self.bot_skins.checked(p.key,team) is not None]
+                if not targets:continue
+                result=self.bot_skins.batch({team:skin},targets)
+                if '；未完成' in result:raise NotReady(result)
+                self.skin_once.pop(team,None);self.host_watch_error.pop(team,None)
+                self.emit('log',text=result);self.emit_host_watch()
+            except Exception as ex:self.host_watch_wait(team,str(ex))
+    def host_watch_wait(self,key,message):
+        if self.host_watch_error.get(key)!=message:self.emit('log',text='等待应用：'+message)
+        self.host_watch_error[key]=message
+    def configure_skin_action(self,action,data):
+        if action=='bot_skin_catalog':
+            try:self.emit('bot_skins',view=data['view'],rows=self.skin_file_rows(data.get('game')),rules=dict(self.bot_skins.rules))
+            except Exception as ex:self.emit('bot_skins',view=data['view'],text=str(ex),rules=dict(self.bot_skins.rules))
+            return
+        if self.bot_skins.plan['enabled']:raise NotReady('逐个配额已开启，整队设置已暂停')
+        if action=='bot_skin_batch':
+            choices=data.get('choices',{})
+            if len(choices)!=1:raise ValueError('请选择一个阵营')
+            team,skin=next(iter(choices.items()))
+            if skin is not None and (team in self.bot_skins.rules or self.bot_skins.plan['random'].get(team)):raise NotReady('请先停止该队的持续应用')
+        else:team=data['team'];skin=data.get('skin') if data.get('enabled') else None
+        if team not in (2,3) or (skin is not None and (type(skin) is not int or not 0<=skin<=1000000)):raise ValueError('模型选择无效')
+        self.skin_once.pop(team,None)
+        if action=='bot_skin_batch':
+            if skin is not None:self.skin_once[team]=skin
+        elif skin is None:self.bot_skins.set_rule(team,None,())
+        else:
+            self.bot_skins.rules[team]=skin;self.bot_skins.seen.pop(team,None)
+            self.bot_skins.plan['random'][team]=False;self.bot_skins.applied.clear()
+            self.bot_skins.last_roster=None;self.bot_skins.next_scan=0.
+        self.auto_paused=False;self.emit_host_watch()
+        self.emit('bot_skins',view=data['view'],rules=dict(self.bot_skins.rules),text='配置已保存；等待符合条件的房主对局')
     def advance_teleports(self):
         if self.heroes.pending:return
         if self.b.player_queue and self.b.player_queue.pending:
@@ -2789,8 +3436,11 @@ class Worker(threading.Thread):
                 if self.teleport_active:self.emit('error',text='传送 #'+str(self.teleport_active[1].index)+' 未完成：'+str(ex))
                 else:self.emit('error',text='玩家操作未完成：'+str(ex))
             finally:
-                if not self.b.player_queue.pending:self.teleport_active=None
+                if not self.b.player_queue.pending:self.teleport_active=None;self.round_teleports.pending=None
             if self.b.player_queue.pending:return
+        # Another native action can consume the shared queue receipt.
+        if self.round_teleports.pending and (not self.b.player_queue or not self.b.player_queue.pending):
+            self.round_teleports.pending=None;self.teleport_active=None
         while self.teleport_jobs:
             operation,key,ordinal,epoch,context,generation=self.teleport_jobs.pop(0)
             if generation!=self.request_generation or epoch!=self.b.epoch or context!=self.b.context:
@@ -2804,6 +3454,9 @@ class Worker(threading.Thread):
             except Exception as ex:
                 self.emit('error',text='传送玩家 #'+str(key.index)+' 失败：'+str(ex))
                 if not self.b.mem or not self.b.mem.alive():self.teleport_jobs.clear();return
+        if not self.auto_paused:
+            active=self.round_teleports.step(self.players)
+            if active:self.teleport_active=active
     def advance_each_round(self):
         if self.ground_spawn_pending:return
         if not self.each_round or self.auto_paused or time.monotonic()<self.cheats_next_at:return
@@ -2896,6 +3549,8 @@ class Worker(threading.Thread):
             self.bot_stop_pending=None;self.emit('error',text=str(ex))
     def close_connection(self):
         self.combat.close();self.heroes.close()
+        try:self.bot_skins.close_spawn(False)
+        except Exception as ex:self.emit('log',text='BOT 选肤清理：'+str(ex))
         try:self.b.close()
         except Exception as ex:self.emit('log',text='连接清理提示：'+str(ex))
     def advance_connection(self):
@@ -2919,6 +3574,8 @@ class Worker(threading.Thread):
             if detail!=self.connect_error:self.emit('log',text=message+'；'+detail)
             self.connect_error=detail;return
         self.connect_error='';self.tick_error='';self.last_ui=0.
+        if self.bot_skins.rules and self.bot_skins.rule_pid!=pid:
+            self.bot_skins.records.clear();self.bot_skins.seen.clear();self.bot_skins.reset_assignments();self.bot_skins.rule_pid=pid
         self.emit('connection',connected=True,requires_admin=False,text=f'已连接 PID {pid}')
         self.emit('log',text=f'版本校验通过，已连接 PID {pid}')
     def waiting_client_changed(self):
@@ -2943,6 +3600,9 @@ class Worker(threading.Thread):
                 self.each_round=preferences['enabled'];self.cheats_desired=preferences['cheats'];self.feature_preferences=preferences['features']
             self.connection_generation=self.request_generation;self.next_connect=0.;self.connect_error=''
             self.reset();self.players=[];self.last_context=None
+            if preferences:
+                self.round_teleports.configure(preferences.get('teleports',{}))
+                self.configure_host_watch(preferences.get('host_watch',{}));self.emit_host_watch()
             self.close_connection()
             self.emit('state',ready=False,text='正在查找并验证游戏…',players=[],capabilities={})
             return
@@ -2954,6 +3614,10 @@ class Worker(threading.Thread):
             self.auto_connect=False;self.auto_paused=True;self.reset();self.close_connection();self.players=[]
             self.emit('connection',connected=False,requires_admin=False,text='已断开，自动连接已暂停')
             self.emit('state',ready=False,text='已断开',players=[],capabilities={});return
+        if action=='teleport_rules':
+            self.round_teleports.configure(data['preferences'])
+            if any(self.round_teleports.enabled(a) for a in ('goto','bring')):self.auto_paused=False
+            return
         if action=='each_round':
             self.each_round=bool(data['enabled']);self.cheats_desired=bool(data['cheats']);self.cheats_applied=None;self.cheats_next_at=0.
             self.feature_preferences=data.get('features',{});self.features_applied.clear()
@@ -2963,6 +3627,23 @@ class Worker(threading.Thread):
             self.connection_generation=self.request_generation
             self.each_round=False;self.feature_preferences={};self.cheats_desired=False
             self.reset();self.emit_flags();return
+        if action=='skin_panel_watch':
+            self.bot_skins.panel_watch=bool(data['enabled']);self.bot_skins.next_scan=0.;return
+        if action=='skin_plan':
+            self.skin_plan_revision=data.get('revision',self.skin_plan_revision)
+            self.bot_skins.configure_plan(data['plan'])
+            plan=self.bot_skins.plan
+            for team in list(self.skin_once):
+                if plan['enabled'] or plan['random'].get(team):self.skin_once.pop(team,None)
+            self.auto_paused=False;self.emit_host_watch();return
+        if action=='host_watch':
+            self.configure_host_watch(data['preferences']);self.auto_paused=False;self.emit_host_watch();return
+        if action in ('bot_skin_catalog','bot_skin_batch','bot_skin_rule'):
+            self.configure_skin_action(action,data);return
+        if action=='ghost' and 'key' not in data:
+            self.ghost_watch=bool(data['enabled']);self.auto_paused=False
+            if not self.ghost_watch and self.controls.ghost:self.controls.toggle_all_ghosts()
+            self.emit_host_watch();return
         if action=='heroes_model_watch':
             self.heroes.model_watch=bool(data['enabled']);self.heroes.next_model_sample=0.;return
         if not self.b.mem:raise NotReady('请先连接游戏')
@@ -3019,6 +3700,10 @@ class Worker(threading.Thread):
         if action=='command':
             target=bot_stop_target(data['text'])
             if target is not None:self.start_bot_stop(target);return
+            if self.bot_skins.active() or self.skin_once:
+                spawning={'bot_add','bot_add_t','bot_add_ct','bot_quota','mp_restartgame'}
+                if any(part[0].casefold() in spawning for part in console_segments(data['text'])):
+                    if not self.bot_skins.prepare_spawn(self.skin_once):raise NotReady('等待 BOT 出生前分配器就绪')
             self.b.send(data['text']);self.emit('log',text='已交给游戏命令队列：'+data['text']);return
         if action=='chat':
             self.b.send(chat_command(data['text'],data['team']));self.emit('log',text='喊话已交给游戏命令队列');return
@@ -3074,8 +3759,9 @@ class Worker(threading.Thread):
         if action=='ammo':
             self.controls.ammo=bool(data['enabled']);self.emit('log',text='全局弹药补满：'+('开启' if data['enabled'] else '关闭'));return
         if action=='ghost':
-            count=self.controls.configure_ghost(data.get('keys',[]),bool(data['enabled']))
-            self.emit_flags();self.emit('log',text=('幽灵显形' if data['enabled'] else '幽灵隐身：恢复原生规则')+' · '+str(count)+' 人');return
+            if 'key' in data:self.controls.manual_ghost(data['key'],data['enabled'])
+            elif bool(data['enabled'])!=self.controls.ghost:self.controls.toggle_all_ghosts()
+            self.emit_flags();return
         if action=='cheats':
             enabled=data['enabled']
             self.cheats_desired=bool(enabled);self.cheats_applied=None
@@ -3115,18 +3801,57 @@ class Worker(threading.Thread):
                 self.advance_connection()
                 if not self.b.mem:continue
                 try:
+                    self.b.refresh_server()
+                    if not self.auto_paused:self.bot_skins.prepare_spawn(self.skin_once)
+                    elif self.bot_skins.spawn_hook:self.bot_skins.close_spawn()
+                except Exception as ex:
+                    self.bot_skins.approved_spawn=None
+                    detail='BOT 出生前分配等待：'+str(ex)
+                    if detail!=getattr(self,'skin_spawn_error',''):self.emit('error',text=detail)
+                    self.skin_spawn_error=detail
+                else:self.skin_spawn_error=''
+                spawn_ready=self.bot_skins.spawn_ready(self.skin_once)
+                active=self.bot_skins.active() or bool(self.skin_once)
+                trace_state=((spawn_ready,self.bot_skins.desired_spawn(self.skin_once)) if active else None)
+                if trace_state!=self.skin_trace_state:
+                    self.skin_trace_state=trace_state
+                    self.emit('skin_trace',record=dict(event='config',state='ready' if spawn_ready else 'waiting' if active else 'off'))
+                try:
+                    self.collect_skin_events()
+                    self.skin_trace_error=False
+                except Exception:
+                    if not self.skin_trace_error:self.emit('skin_trace',record=dict(event='events_unavailable'))
+                    self.skin_trace_error=True
+                if spawn_ready!=getattr(self,'skin_spawn_ready',False):
+                    self.skin_spawn_ready=spawn_ready;self.emit_host_watch()
+                try:
                     players=self.b.snapshot()
                     if self.last_context is not None and self.last_context!=self.b.epoch:
-                        self.reset(False);self.emit('log',text='对局或本地角色已变化，持续功能已停止，请重新勾选')
+                        self.reset(False,keep_skin_rules=True)
+                        self.emit('log',text='对局或本地角色已变化，已清除上一局对象'+('；保留 BOT 阵营换肤设置' if self.bot_skins.rules else ''))
                     self.last_context=self.b.epoch;self.players=players
+                    try:self.observe_skin_models(players)
+                    except Exception:
+                        self.skin_observations.clear()
+                        self.emit('skin_trace',record=dict(event='readback_unavailable'))
                     self.advance_each_round()
                     try:
                         for message in self.round_settings.step(players):self.emit('log',text=message)
                     except Exception as ex:
                         self.round_settings.clear();self.emit('error',text='每局设置已停止：'+str(ex));self.emit_flags()
                     self.controls.disable_unavailable()
+                    self.advance_host_watch(players)
+                    if not self.auto_paused and not self.skin_restore_pending and (self.bot_skins.active() or self.bot_skins.panel_watch) and self.b.capabilities.get('roster',{}).get('available'):
+                        try:skin_error=self.bot_skins.maintain(players) or ''
+                        except Exception as ex:skin_error=str(ex)
+                        if skin_error and skin_error!=getattr(self,'skin_error',''):self.emit('error',text=skin_error)
+                        self.skin_error=skin_error
                     for message in self.controls.step_isolated(players):self.emit('error',text=message);self.emit_flags()
                     restore_errors=self.controls.retry_restores()
+                    if self.skin_restore_pending:
+                        try:restore_errors+=self.bot_skins.restore()
+                        except Exception as ex:restore_errors.append(str(ex))
+                        self.skin_restore_pending=bool(self.bot_skins.records)
                     restore_message=restore_errors[0] if restore_errors else ''
                     if restore_message and restore_message!=self.restore_error:self.emit('error',text='临时值仍待恢复，将继续重试：'+restore_message)
                     if not restore_message and self.restore_error:self.emit('log',text='待恢复的临时值已处理')
@@ -3134,7 +3859,7 @@ class Worker(threading.Thread):
                     if self.b.queue:self.b.queue.poll()
                     self.combat.step(players)
                     self.heroes.step(players)
-                    if self.b.player_queue or self.teleport_jobs:self.advance_teleports()
+                    self.advance_teleports()
                     self.advance_bot_stop()
                     self.advance_ground_spawn()
                     if self.chat:
@@ -3172,7 +3897,7 @@ class Worker(threading.Thread):
                     # and restoration records while the same context is valid.
                     try:stable=self.b.context is not None and self.b.current_context()==self.b.context
                     except Exception:stable=False
-                    if not stable or self.combat.no_attack or (self.combat.hook and self.combat.hook.desired is not None) or self.heroes.pending or self.heroes.protected or self.heroes.auto or self.heroes.no_wait or self.heroes.upgrades or self.ground_spawn_pending or self.teleport_jobs or self.teleport_active or self.chat or self.bot_stop_pending or self.controls.hp is not None or self.controls.money is not None or self.controls.ammo or self.controls.scale or self.controls.buy or self.controls.invulnerable or self.controls.ghost:self.reset(stable)
+                    if not stable or self.combat.no_attack or (self.combat.hook and self.combat.hook.desired is not None) or self.heroes.pending or self.heroes.protected or self.heroes.auto or self.heroes.no_wait or self.heroes.upgrades or self.ground_spawn_pending or self.teleport_jobs or self.teleport_active or self.chat or self.bot_stop_pending or self.controls.hp is not None or self.controls.money is not None or self.controls.ammo or self.controls.scale or self.controls.buy or self.controls.invulnerable or self.controls.ghost:self.reset(stable,keep_skin_rules=True,keep_teleport_rules=stable)
                     message=str(ex)
                     # A dead process or changed module set must not leave a stale
                     # handle behind. Release it here so the next automatic pass
@@ -3185,7 +3910,7 @@ class Worker(threading.Thread):
                     if isinstance(ex,(OSError,CompatibilityError)) or getattr(ex,'code',None)=='modules_changed':connection_lost=True
                     if not connection_lost and not stable and self.waiting_client_changed():connection_lost=True
                     if connection_lost:
-                        self.reset(False)
+                        self.reset(False,keep_skin_rules=True)
                         self.close_connection();self.players=[];self.last_context=None;self.next_connect=0.
                         self.emit('connection',connected=False,retrying=self.auto_connect,requires_admin=False,code='process_lost',text='游戏连接已断开，正在重新发现…' if self.auto_connect else '游戏连接已断开，自动连接已暂停')
                     elif not stable:
@@ -3211,7 +3936,11 @@ from tkinter import ttk
 
 EN = {
  '检查更新':'Check updates',
- '幽灵显形':'Reveal ghosts','幽灵隐身':'Restore ghost stealth',
+ '幽灵显形':'Reveal ghosts','幽灵隐身':'Restore ghost stealth','暂无幽灵':'No active ghosts',
+ '幽灵显形 · 运行中':'Reveal ghosts · Running','幽灵重新隐藏中':'Restoring ghost stealth',
+ '指定BOT SKIN 模型':'Assign BOT skins','应用':'Apply','应用一次':'Apply once',
+ '持续应用':'Keep applying','停止持续':'Stop applying','已停止持续应用':'Stopped applying',
+ '正在读取可用模型…':'Loading available models…','下次出生时使用指定模型。':'Selected skins take effect on the next spawn.',
  '显形':'Visible','隐身':'Hidden',
  '恢复默认值':'Restore defaults','撤销恢复默认值':'Undo restore defaults',
  '每局都应用':'Apply every round',
@@ -3269,6 +3998,58 @@ EN = {
  '进入对局后显示玩家列表':'Players appear after joining a match','修改所选玩家':'Edit checked players',
  '设置血量':'Set HP','设置金钱':'Set money','锁定所选玩家血量':'Lock checked HP','锁定所选玩家金钱':'Lock checked money',
  '投票踢出':'Vote kick','无票踢出':'Kick directly','传送到此人身边':'Go to player','将此人传送过来':'Bring player',
+ '每局传送仅对当前地图的选择生效':'Automatic teleport uses selections in this map only',
+ '幽灵显形 · 等待对局':'Reveal ghosts · Waiting',
+ '可预先配置；等待符合条件的房主对局':'Configure now; waiting for a compatible hosted match',
+ '配置已保存；等待符合条件的房主对局':'Settings saved; waiting for a compatible hosted match',
+ '请先选择含角色目录的游戏目录':'Select the game folder containing the character catalog',
+ '取消等待':'Cancel pending',
+ '整队设置':'Team settings',
+ '按阵营配置默认模型，或让每个 BOT 每回合独立随机。':'Choose a team model or randomize each BOT every round.',
+ '逐个配额':'Individual quotas',
+ '换肤诊断日志暂时无法写入':'Unable to write the skin diagnostic log',
+ '进图前预设，发现 BOT 后自动补位；替补继承该位置的设置。':'Configure ahead of time. New BOTs fill vacancies and inherit that position’s setting.',
+ '启用逐个配额':'Enable individual quotas',
+ '整队设置已暂停':'Team settings paused',
+ '每回合随机':'Random each round',
+ '随机已开启':'Random enabled',
+ '配额数量':'Quota count',
+ '反选':'Invert selection',
+ '清空选择':'Clear selection',
+ '批量指定':'Apply to checked',
+ '跟随游戏':'Use game default',
+ '空位 · 等待 BOT':'Vacant · Waiting for BOT',
+ '配额启用后独立生效；整队控制暂停。':'Quotas are active; team controls are paused.',
+ '默认使用整队设置；开启后只执行下方配额。':'Team settings are active. Enable quotas to use the assignments below.',
+ '分配器就绪后，新 BOT 首次出生使用指定模型；已在场 BOT 在下次出生更新。':'Once the allocator is ready, new BOTs use assigned models on their first spawn; existing BOTs update on their next spawn.',
+ '序号':'No.',
+ '当前 BOT':'Current BOT',
+ '指定模型':'Assigned model',
+ '请选择配额':'Select quota positions first',
+ '逐个配额已开启，整队设置已暂停':'Individual quotas are enabled; team settings are paused',
+ '请选择当前阵营的模型':'Select a model for this team',
+ '该阵营没有可用模型':'No models available for this team',
+ '出生前分配已就绪':'Pre-spawn allocator ready',
+ '配置已保存；等待出生前分配器就绪':'Settings saved; waiting for the pre-spawn allocator',
+ 'BOT 选肤回调仍在完成，稍后重试恢复':'BOT model callback is finishing; restoration will retry',
+ 'BOT 选肤回调仍在完成，原值恢复等待下一次处理':'BOT model callback is finishing; restoration is pending',
+ '整队设置已暂停 · 出生前分配已就绪':'Team settings paused · Pre-spawn allocator ready',
+ '整队设置已暂停 · 配置已保存；等待出生前分配器就绪':'Team settings paused · Waiting for the pre-spawn allocator',
+ '等待 BOT 出生前分配器就绪':'Waiting for the pre-spawn BOT model allocator',
+ 'BOT 出生前分配等待：':'BOT pre-spawn allocator waiting: ',
+ 'BOT 出生前选肤入口未验证':'BOT pre-spawn entry could not be verified',
+ 'BOT 出生回调已由其他工具占用':'Another tool owns the BOT spawn callback',
+ 'BOT 出生回调发生变化':'The BOT spawn callback changed',
+ 'BOT 选肤计时入口未验证':'BOT model timer could not be verified',
+ 'BOT 选肤计时入口尚未就绪':'BOT model timer is not ready',
+ 'BOT 选肤内存分配失败':'BOT model allocator memory allocation failed',
+ 'BOT 模型目录超过支持范围':'BOT model catalog exceeds the supported size',
+ 'BOT 选肤清理：':'BOT model allocator cleanup: ',
+ '立即传送一次':'Teleport once now','每个新对局执行一次':'Once per new match',
+ '前往此人\n每新对局生效中':'Go to player\nActive each new match','传送过来\n每新对局生效中':'Bring players\nActive each new match',
+ '每局传送设置已保存':'Automatic teleport settings saved','每局传送已入队：#':'Automatic teleport queued: #',
+ '每局传送等待：':'Automatic teleport waiting: ',
+
  '复制名字':'Copy name','操作高亮玩家':'Act on highlighted player','请先点选一名玩家':'Select a player first',
  '请先连接游戏并进入对局':'Connect and join a match first','不能对自己执行此操作':'Cannot use this action on yourself',
  '观战或电视实体不能作为此操作目标':'This action cannot target a spectator or TV entity',
@@ -3623,6 +4404,12 @@ def style_window(root):
     s.configure('Accent.TButton',background=BLUE,foreground='#eff8ff')
     s.map('Accent.TButton',background=[('disabled','#202a37'),('pressed','#174a76'),('active','#2b73af')])
     s.configure('Small.TButton',padding=(10,5))
+    s.configure('Teleport.Small.TButton',padding=(8,10))
+    s.configure('Active.Teleport.Small.TButton',background='#17644f',foreground='#e8fff5')
+    s.map('Active.Teleport.Small.TButton',background=[('pressed','#124d3d'),('active','#217c63')])
+    s.configure('TeleportArrow.Small.TButton',padding=(4,10),font=('Microsoft YaHei UI',12,'bold'))
+    s.configure('Active.TeleportArrow.Small.TButton',background='#17644f',foreground='#e8fff5')
+    s.map('Active.TeleportArrow.Small.TButton',background=[('pressed','#124d3d'),('active','#217c63')])
     s.configure('Undo.TButton',background='#d77720',foreground='#ffffff')
     s.map('Undo.TButton',background=[('pressed','#a95414'),('active','#ee9135')])
     s.configure('Running.TButton',background='#17644f',foreground='#e8fff5',padding=(11,6))
@@ -3639,6 +4426,19 @@ def style_window(root):
     s.map('Treeview',background=[('selected','#264665')],foreground=[('selected','#ffffff')])
     s.map('Treeview.Heading',background=[('active','#2b415b')])
     s.configure('Vertical.TScrollbar',background='#3a5067',troughcolor=INPUT,borderwidth=0,arrowcolor=MUTED)
+    s.configure('Skin.Vertical.TScrollbar',background='#405773',troughcolor=INPUT,bordercolor=INPUT,
+                lightcolor='#405773',darkcolor='#405773',arrowcolor=TEXT,gripsize=0,borderwidth=0)
+    for part in ('background','lightcolor','darkcolor'):
+        s.map('Skin.Vertical.TScrollbar',**{part:[('pressed',BLUE),('active','#527298')]})
+    s.configure('SkinAction.TButton',padding=(8,8),font=('Microsoft YaHei UI',10))
+    s.configure('Skin.TSpinbox',fieldbackground=INPUT,background='#283b50',foreground=TEXT,arrowcolor=ACCENT,
+                bordercolor=BORDER,lightcolor=BORDER,darkcolor=BORDER,insertcolor=TEXT,padding=(5,6))
+    s.configure('SkinPrimary.SkinAction.TButton',background='#236c9b',foreground='#f0f9ff')
+    s.map('SkinPrimary.SkinAction.TButton',background=[('disabled','#202a37'),('pressed','#174a76'),('active','#2c80b5')])
+    s.configure('SkinActive.SkinAction.TButton',background='#17644f',foreground='#e8fff5')
+    s.map('SkinActive.SkinAction.TButton',background=[('disabled','#202a37'),('pressed','#124d3d'),('active','#217c63')])
+    s.configure('Skin.TCombobox',background='#283b50',lightcolor=BORDER,darkcolor=BORDER)
+    s.map('Skin.TCombobox',background=[('pressed',BLUE),('active','#344f6b'),('readonly','#283b50')])
     s.configure('TNotebook',background=BG,borderwidth=0)
     s.configure('TNotebook.Tab',background=SIDE,foreground=MUTED,padding=(22,8),expand=(0,0,0,0),borderwidth=0,bordercolor=BORDER,lightcolor=BORDER,darkcolor=BORDER)
     # Clam supplies a smaller selected-tab padding unless its state map is cleared.
@@ -3670,11 +4470,217 @@ class ScrollFrame(tk.Frame):
 def label(parent,text,muted=False,size=10,bg=CARD,**kw):
     return tk.Label(parent,text=text,bg=bg,fg=MUTED if muted else TEXT,font=('Microsoft YaHei UI',size),anchor='w',**kw)
 
+class HostLogArchive:
+    """One transactional ZIP container; new records use maximum XZ compression."""
+    lock = threading.Lock()
+    pending = {}
+    sweeps = set()
+    worker = None
+    errors = {}
+    limit = 1024 * 1024
+    suffixes = ('.run.log', '.skin-events.jsonl', '.error.log')
+
+    @staticmethod
+    def archive_path(script):
+        script=Path(script).resolve()
+        return script.with_name(script.stem+'.总日志.zip')
+
+    @classmethod
+    def source_script(cls,path):
+        path=Path(path).resolve()
+        for suffix in cls.suffixes:
+            if path.name.endswith(suffix):
+                return path.with_name(path.name[:-len(suffix)]+'.pyw'),suffix
+        raise ValueError('Unknown HOST log source')
+
+    @classmethod
+    def start_locked(cls):
+        if cls.worker is None:
+            cls.worker=threading.Thread(target=cls.drain,name='HOST total log',daemon=False)
+            cls.worker.start()
+
+    @classmethod
+    def append(cls,path,value):
+        script,kind=cls.source_script(path)
+        # Retain source labels inside the package, never as separate files.
+        data=('['+kind[1:]+'] '+value).encode('utf-8')
+        with cls.lock:
+            cls.pending.setdefault(script,[]).append(data)
+            cls.start_locked()
+
+    @classmethod
+    def sweep(cls,script):
+        with cls.lock:
+            cls.sweeps.add(Path(script).resolve())
+            cls.start_locked()
+
+    @classmethod
+    def flush(cls,timeout=None):
+        deadline=None if timeout is None else time.monotonic()+timeout
+        while True:
+            with cls.lock:worker=cls.worker
+            if worker is None:return not cls.errors
+            worker.join(None if deadline is None else max(0.,deadline-time.monotonic()))
+            if deadline is not None and time.monotonic()>=deadline:return False
+
+    @classmethod
+    def drain(cls):
+        # Coalesce adjacent UI/worker records without blocking either producer.
+        time.sleep(.2)
+        while True:
+            with cls.lock:
+                scripts=set(cls.pending)|cls.sweeps
+                if not scripts:
+                    cls.worker=None
+                    return
+                script=next(iter(scripts))
+                chunks=cls.pending.pop(script,[])
+                cls.sweeps.discard(script)
+            try:
+                cls.commit(script,chunks)
+            except Exception as ex:
+                with cls.lock:
+                    if chunks:cls.pending[script]=chunks+cls.pending.get(script,[])
+                    cls.sweeps.add(script)
+                    cls.errors[script]=type(ex).__name__
+                    cls.worker=None
+                return
+            else:
+                with cls.lock:cls.errors.pop(script,None)
+
+    @classmethod
+    def legacy_files(cls,script):
+        result=[]
+        for suffix in cls.suffixes:
+            base=script.with_suffix(suffix)
+            for path in base.parent.glob(base.name+'*'):
+                if path.is_symlink() or not path.is_file():continue
+                tail=path.name[len(base.name):]
+                if tail in ('','.1') or (tail.startswith('.') and path.suffix in ('.xz','.zst','.br','.pending')):
+                    result.append(path)
+        return sorted(result,key=lambda p:(p.stat().st_mtime_ns,p.name))
+
+    @staticmethod
+    def digest(stream):
+        result=hashlib.sha256()
+        while block:=stream.read(256*1024):result.update(block)
+        return result.hexdigest()
+
+    @staticmethod
+    def mutex(path):
+        from contextlib import contextmanager
+        @contextmanager
+        def guard():
+            k=ctypes.WinDLL('kernel32',use_last_error=True)
+            k.CreateMutexW.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_wchar_p]
+            k.CreateMutexW.restype=ctypes.c_void_p
+            k.WaitForSingleObject.argtypes=[ctypes.c_void_p,ctypes.c_ulong]
+            k.WaitForSingleObject.restype=ctypes.c_ulong
+            k.ReleaseMutex.argtypes=[ctypes.c_void_p]
+            k.CloseHandle.argtypes=[ctypes.c_void_p]
+            name='Local\\CSO2HostTotalLog-'+hashlib.sha256(str(path).casefold().encode()).hexdigest()
+            handle=k.CreateMutexW(None,False,name)
+            if not handle:raise ctypes.WinError(ctypes.get_last_error())
+            held=False
+            try:
+                code=k.WaitForSingleObject(handle,30000)
+                if code not in (0,0x80):raise OSError('Total log is busy')
+                held=True
+                yield
+            finally:
+                if held:k.ReleaseMutex(handle)
+                k.CloseHandle(handle)
+        return guard()
+
+    @classmethod
+    def commit(cls,script,chunks):
+        import io,lzma,tempfile,uuid,zipfile
+        archive=cls.archive_path(script)
+        with cls.mutex(archive):
+            sources=cls.legacy_files(script)
+            if not chunks and not sources:return
+            # Seal only unfinished plain files. Windows rejects renaming an
+            # open writer; a newly created file at the old name is a new batch.
+            sealed=[]
+            for path in sources:
+                if path.suffix not in ('.xz','.zst','.br','.pending'):
+                    snapshot=path.with_name(path.name+'.'+uuid.uuid4().hex+'.pending')
+                    try:path.rename(snapshot)
+                    except OSError:continue
+                    path=snapshot
+                sealed.append(path)
+            if not chunks and not sealed:return
+            fd,name=tempfile.mkstemp(prefix='.'+archive.name+'-',suffix='.tmp',dir=archive.parent)
+            os.close(fd)
+            staged=Path(name);verified={};remove=[]
+            try:
+                if archive.exists():shutil.copyfile(archive,staged)
+                with zipfile.ZipFile(staged,'a',compression=zipfile.ZIP_STORED,allowZip64=True) as package:
+                    existing=set(package.namelist())
+                    for source in sealed:
+                        stat=source.stat()
+                        identity=(stat.st_size,stat.st_mtime_ns,stat.st_ino)
+                        with source.open('rb') as stream:checksum=cls.digest(stream)
+                        wrapped=source.suffix not in ('.xz','.zst','.br')
+                        member='history/'+checksum+'/'+source.name+('.xz' if wrapped else '')
+                        if member not in existing:
+                            # Existing XZ/Zstd/Brotli files remain byte-for-byte
+                            # intact. Plain legacy files use maximum XZ.
+                            info=zipfile.ZipInfo(member)
+                            info.compress_type=zipfile.ZIP_STORED
+                            with package.open(info,'w',force_zip64=True) as dest,source.open('rb') as stream:
+                                if wrapped:
+                                    with lzma.open(dest,'wb',preset=9|lzma.PRESET_EXTREME) as packed:
+                                        shutil.copyfileobj(stream,packed,256*1024)
+                                else:shutil.copyfileobj(stream,dest,256*1024)
+                            existing.add(member)
+                        verified[member]=(checksum,wrapped)
+                        remove.append((source,identity))
+                    batch=bytearray()
+                    def write_batch():
+                        if not batch:return
+                        payload=bytes(batch)
+                        compressed=lzma.compress(payload,preset=9|lzma.PRESET_EXTREME,check=lzma.CHECK_CRC64)
+                        if lzma.decompress(compressed)!=payload:raise OSError('Log compression verification failed')
+                        member='records/'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex+'.log.xz'
+                        package.writestr(member,compressed)
+                        verified[member]=(hashlib.sha256(compressed).hexdigest(),False)
+                        batch.clear()
+                    for chunk in chunks:
+                        if batch and len(batch)+len(chunk)>cls.limit:write_batch()
+                        batch.extend(chunk)
+                    write_batch()
+                with zipfile.ZipFile(staged,'r') as check:
+                    for member,(checksum,wrapped) in verified.items():
+                        with check.open(member) as stream:
+                            if wrapped:
+                                with lzma.open(stream,'rb') as decoded:actual=cls.digest(decoded)
+                            else:actual=cls.digest(stream)
+                            if actual!=checksum:raise OSError('Total log verification failed')
+                for source,identity in remove:
+                    stat=source.stat()
+                    if (stat.st_size,stat.st_mtime_ns,stat.st_ino)!=identity:raise OSError('Legacy log changed while merging')
+                with staged.open('r+b') as stream:os.fsync(stream.fileno())
+                os.replace(staged,archive)
+                # Retry-safe: if removal fails, the checksum-named member is
+                # verified and reused on the next sweep instead of duplicated.
+                for source,identity in remove:
+                    try:
+                        stat=source.stat()
+                        if (stat.st_size,stat.st_mtime_ns,stat.st_ino)==identity:source.unlink()
+                    except OSError:pass
+            finally:staged.unlink(missing_ok=True)
+
+
 class App:
     def __init__(self,root,path,settings=None,start_worker=True):
         self.root=root;root.withdraw();root.configure(bg=BG);self.updater=None
         self.path=Path(path);self.digest=hashlib.sha256(self.path.read_bytes()).hexdigest() if self.path.exists() else None
-        self.log_path=self.path.with_suffix('.run.log');self.persist_logs=start_worker
+        self.log_path=HostLogArchive.archive_path(self.path);self.persist_logs=start_worker
+        self.waiting_roster=None
+        if self.persist_logs:
+            HostLogArchive.sweep(self.path)
+            self.root.after(30000,self.archive_logs)
         self.settings=settings or {};self.events=queue.Queue();self.worker=Worker(self.events,DATA['caps']) if start_worker else None
         self.save_job=None;self.save_dirty_at=None;self.settings_loading=True;self.undo_defaults=None;self.undo_runtime=None;self.saved_settings=None
         self.cheats_desired=bool(self.settings.get('cheats_desired',False))
@@ -3682,7 +4688,12 @@ class App:
         self.feature_preferences=dict(prefs) if isinstance(prefs,dict) else {}
         self.capabilities={};self.command_states={};self.feature_widgets=[];self.game_directory=self.settings.get('game_directory','')
         self.ready=False;self.epoch=-1;self.players={};self.checked=set();self.custom=[];self.pages={};self.nav={};self.closing=False;self.logs=[];self.last_cheats=False;self.needs_admin=False
+        self._teleport_sent=None
         self.vars={};self.current_page='players';self.filter_job=None;self.state_epoch=None;self.invulnerable_targets=set();self.ghost_targets=set()
+        self.ghost_running=self.ghost_restoring=False;self.skin_window=None;self.skin_view=0
+        self.ghost_desired=False;self.skin_rules={};self.skin_pending={};self.skin_selected={}
+        self.load_host_preferences(self.settings)
+        self.skin_position=self.valid_skin_position(self.settings.get('skin_dialog_position'))
         self.auto_connect=bool(start_worker);self.fit_job=None;self.fitting_window=False
         root.title(TITLE);style_window(root);self.language=UiLanguage(root)
         width=min(880,max(760,root.winfo_screenwidth()-80));height=min(730,max(620,root.winfo_screenheight()-100))
@@ -3693,6 +4704,9 @@ class App:
         if self.worker:
             self.worker.each_round=self.vars['each_round'].get();self.worker.cheats_desired=self.cheats_desired
             self.worker.feature_preferences=dict(self.feature_preferences)
+            self.worker.round_teleports.configure(self.teleport_preferences())
+            self.worker.configure_host_watch(self.host_preferences())
+            self._teleport_sent=self.teleport_preferences()
         self.apply_capabilities();self.show_page('players');root.protocol('WM_DELETE_WINDOW',self.close)
         self.language.capture(root);self.language.callbacks.append(self.refresh_language);self.language.refresh()
         root.bind('<Configure>',self.on_window_configure,add='+');self.queue_window_fit()
@@ -3880,10 +4894,24 @@ class App:
         self.vars['invulnerable_mode'].trace_add('write',lambda *_:self.refresh_invulnerability_ui())
         self.player_tree.tag_configure('invulnerable',foreground=GREEN)
         label(actions,'前往当前玩家；传送过来可批量勾选',True,9).grid(row=0,column=0,columnspan=2,sticky='w',pady=(0,3))
-        self.player_actions={}
+        self.player_actions={};self.teleport_menus={};self.teleport_arrows={}
+        self.teleport_modes={a:tk.BooleanVar(value=False) for a in ('goto','bring')}
         for i,(action,title) in enumerate((('vote','投票踢出'),('kick','无票踢出'),('goto','传送到此人身边'),('bring','将此人传送过来'),('copy','复制名字'),('ghost','幽灵显形'))):
-            button=ttk.Button(actions,text=title,width=0,style='Small.TButton',command=lambda a=action:self.player_action(a))
-            button.grid(row=1+i//2,column=i%2,columnspan=1,sticky='ew',padx=2,pady=2);self.player_actions[action]=button
+            cell=tk.Frame(actions,bg=CARD);cell.grid(row=1+i//2,column=i%2,sticky='ew',padx=2,pady=2)
+            button=ttk.Button(cell,text=title,width=0,style='Small.TButton',command=lambda a=action:self.player_action(a))
+            button.pack(side='left',fill='x',expand=True);self.player_actions[action]=button
+            if action in ('goto','bring'):
+                button.configure(style='Teleport.Small.TButton');button.pack_configure(fill='both')
+                menu=tk.Menu(self.root,tearoff=False,bg=CARD,fg=TEXT,activebackground=BLUE,activeforeground=TEXT)
+                menu.add_command(label=self.language.t('立即传送一次'),command=lambda a=action:self.player_action(a))
+                menu.add_checkbutton(label=self.language.t('每个新对局执行一次'),variable=self.teleport_modes[action],command=lambda a=action:self.change_teleport_mode(a))
+                arrow=ttk.Button(cell,text='▾',width=2,style='TeleportArrow.Small.TButton',command=lambda a=action:self.open_teleport_menu(a))
+                arrow.pack(side='right',fill='y',padx=(2,0));self.teleport_menus[action]=menu;self.teleport_arrows[action]=arrow
+            if action=='ghost':
+                self.ghost_arrow=ttk.Button(cell,text='▾',width=2,style='Small.TButton',command=self.open_ghost_menu)
+                self.ghost_arrow.pack(side='left',padx=(2,0))
+        self.skin_button=ttk.Button(actions,text='指定BOT SKIN 模型',style='Small.TButton',command=self.open_bot_skins)
+        self.skin_button.grid(row=4,column=0,columnspan=2,sticky='ew',padx=2,pady=2)
         for col in range(2):actions.columnconfigure(col,weight=1)
         self.round_menus={};self.action_modes={};self.mode_checks={}
         for key,title,default in [('hp','血量',9999),('money','金钱',99999)]:
@@ -3953,8 +4981,8 @@ class App:
     def queue_window_fit(self):
         if self.closing or self.fit_job is not None:return
         self.fit_job=self.root.after(100,self.fit_window)
-    def window_work_area(self):
-        # Use this window's monitor work area, excluding the taskbar.
+    def window_work_area(self,point=None):
+        # A remembered dialog may be on a different monitor from the main window.
         try:
             from ctypes import wintypes as wt
             class MonitorInfo(ctypes.Structure):
@@ -3963,7 +4991,11 @@ class App:
             user.MonitorFromWindow.argtypes=[wt.HWND,wt.DWORD];user.MonitorFromWindow.restype=wt.HANDLE
             user.GetMonitorInfoW.argtypes=[wt.HANDLE,ctypes.POINTER(MonitorInfo)];user.GetMonitorInfoW.restype=wt.BOOL
             info=MonitorInfo();info.cbSize=ctypes.sizeof(info)
-            if user.GetMonitorInfoW(user.MonitorFromWindow(self.root.winfo_id(),2),ctypes.byref(info)):
+            if point is None:monitor=user.MonitorFromWindow(self.root.winfo_id(),2)
+            else:
+                user.MonitorFromPoint.argtypes=[wt.POINT,wt.DWORD];user.MonitorFromPoint.restype=wt.HANDLE
+                monitor=user.MonitorFromPoint(wt.POINT(*point),2)
+            if user.GetMonitorInfoW(monitor,ctypes.byref(info)):
                 r=info.rcWork;return r.left,r.top,r.right,r.bottom
         except (OSError,AttributeError):pass
         return 0,0,self.root.winfo_screenwidth(),self.root.winfo_screenheight()
@@ -4049,22 +5081,63 @@ class App:
     def active_player(self):
         selected=self.player_tree.selection()
         return self.players.get(selected[0]) if len(selected)==1 else None
-    def ghost_action_targets(self):
-        if not self.ready or not self.capabilities.get('ghost',{}).get('available',False):return []
+    def host_preferences(self):
+        return dict(ghost=self.ghost_desired,skins=dict(self.skin_rules),skin_plan=skin_plan_settings(self.skin_plan))
+    def load_host_preferences(self,settings):
+        prefs=settings.get('host_watch',{})
+        if not isinstance(prefs,dict):prefs={}
+        self.ghost_desired=bool(prefs.get('ghost',False))
+        self.skin_plan=skin_plan_settings(prefs.get('skin_plan'));self.skin_assignments={2:[],3:[]};self.skin_plan_serial=getattr(self,'skin_plan_serial',0);self.skin_plan_pending=0;self.skin_spawn_ready=False
+        def choices(data):
+            return {int(t):s for t,s in data.items() if str(t) in ('2','3') and type(s) is int and 0<=s<=1000000} if isinstance(data,dict) else {}
+        self.skin_rules=choices(prefs.get('skins'));self.skin_selected=choices(settings.get('skin_selected'))
+        self.skin_pending={}
+    def teleport_preferences(self):
         player=self.active_player()
-        targets=[p for p in self.players.values() if p.key in self.checked] if self.checked else ([player] if player else [])
-        return [p for p in targets if p.alive and p.team==2 and
-                re.sub(r'[\s_\-]+','',p.name).casefold() not in ('cso2tv','sourcetv','hltv')]
+        focus=player.key if player else None
+        checks=self.checked
+        if self.waiting_roster is not None and self.waiting_roster[0]==self.epoch:
+            _,focus,checks=self.waiting_roster
+        return dict(modes={a:v.get() for a,v in self.teleport_modes.items()},
+                    keys=dict(goto=[focus] if focus else [],bring=sorted(checks,key=lambda k:k.index)))
+    def sync_teleport_preferences(self):
+        if self.settings_loading or not self.worker:return
+        prefs=self.teleport_preferences()
+        if prefs==self._teleport_sent:return
+        if not any(prefs['modes'].values()) and self._teleport_sent is None:return
+        if self.worker.submit('teleport_rules',preferences=prefs):self._teleport_sent=prefs
+    def change_teleport_mode(self,action):
+        self.update_player_actions()
+        self.log('每局传送仅对当前地图的选择生效')
+    def open_teleport_menu(self,action):
+        menu=self.teleport_menus[action];arrow=self.teleport_arrows[action]
+        menu.entryconfigure(0,label=self.language.t('立即传送一次'),
+                            state='normal' if self.player_actions[action].instate(['!disabled']) else 'disabled')
+        menu.entryconfigure(1,label=self.language.t('每个新对局执行一次'),state='normal')
+        try:menu.tk_popup(arrow.winfo_rootx(),arrow.winfo_rooty()+arrow.winfo_height())
+        finally:menu.grab_release()
+    def open_ghost_menu(self):
+        if getattr(self,'ghost_popup',None) is not None:self.ghost_popup.destroy()
+        menu=tk.Menu(self.root,tearoff=False,bg=CARD,fg=TEXT,activebackground=BLUE)
+        self.ghost_popup=menu
+        for p in self.players.values():
+            if not Controls.eligible_ghost(p):continue
+            sub=tk.Menu(menu,tearoff=False,bg=CARD,fg=TEXT,activebackground=BLUE)
+            for enabled,title in ((True,'幽灵显形'),(False,'幽灵隐身')):
+                sub.add_command(label=self.language.t(title),command=lambda k=p.key,e=enabled:self.request('ghost',key=k,enabled=e))
+            menu.add_cascade(label=f'#{p.key.index} {p.name}',menu=sub)
+        if menu.index('end') is None:menu.add_command(label=self.language.t('暂无幽灵'),state='disabled')
+        try:menu.tk_popup(self.ghost_arrow.winfo_rootx(),self.ghost_arrow.winfo_rooty()+self.ghost_arrow.winfo_height())
+        finally:menu.grab_release()
     def update_player_actions(self):
         player=self.active_player()
         for action,button in self.player_actions.items():
             if action=='ghost':
-                targets=self.ghost_action_targets()
-                hiding=bool(targets) and all(p.key in self.ghost_targets for p in targets)
-                # The action shows the acknowledged persistent override; the
-                # roster separately shows actual sampled render alpha.
-                button.configure(text=self.language.t('幽灵隐身' if hiding else '幽灵显形'))
-                button.state(['!disabled'] if targets else ['disabled'])
+                available=self.ready and self.capabilities.get('ghost',{}).get('available',False)
+                button.configure(text=self.language.t('幽灵显形 · 运行中' if self.ghost_running else '幽灵显形 · 等待对局' if self.ghost_desired else '幽灵重新隐藏中' if self.ghost_restoring else '幽灵显形'),
+                                 style='Running.TButton' if self.ghost_desired or self.ghost_running else 'Small.TButton')
+                button.state(['!disabled'])
+                self.ghost_arrow.state(['!disabled'] if available else ['disabled'])
                 continue
             enabled=player is not None and (action=='copy' or (self.ready and not player.local and player.team in (2,3)))
             if action in ('goto','bring'):
@@ -4072,13 +5145,16 @@ class App:
                 if action=='goto' and player:targets=[player]+targets
                 enabled=self.ready and any(not p.local and p.team in (2,3) and
                     re.sub(r'[\s_\-]+','',p.name).casefold() not in ('cso2tv','sourcetv','hltv') for p in targets)
+                running=self.teleport_modes[action].get()
+                title=({'goto':'前往此人\n每新对局生效中','bring':'传送过来\n每新对局生效中'} if running else
+                       {'goto':'传送到此人身边','bring':'将此人传送过来'})[action]
+                button.configure(text=self.language.t(title),style=('Active.' if running else '')+'Teleport.Small.TButton')
+                self.teleport_arrows[action].configure(style=('Active.' if running else '')+'TeleportArrow.Small.TButton')
             button.state(['!disabled'] if enabled else ['disabled'])
+        self.sync_teleport_preferences()
     def player_action(self,action):
         if action=='ghost':
-            targets=self.ghost_action_targets()
-            if not targets:self.log('请选择存活的 T 阵营幽灵',True);return False
-            enabled=not all(p.key in self.ghost_targets for p in targets)
-            return self.request('ghost',keys=[p.key for p in targets],enabled=enabled)
+            return self.request('ghost',enabled=not (self.ghost_desired or self.ghost_running))
         if action in ('goto','bring'):
             keys=sorted(self.checked,key=lambda k:k.index)
             if not keys:
@@ -4104,6 +5180,8 @@ class App:
         self.update_heroes_models(self.heroes_model_rows,self.heroes_model_reason)
         self.update_heroes_levels(self.heroes_level_rows,self.language.source(self.heroes_upgrade_status.cget('text')))
         self.update_players(list(self.players.values()));self.filter_catalog();self.queue_window_fit()
+        if self.skin_window is not None:
+            self.skin_window.title(self.language.t('指定BOT SKIN 模型'));self.refresh_skin_text();self.render_skin_quota_rows();self.refresh_skin_buttons()
         self.defaults_button.configure(text=self.language.t('撤销恢复默认值' if self.undo_defaults is not None else '恢复默认值'))
     def toggle_player(self,event):
         if event.keysym=='space':iid=self.player_tree.focus()
@@ -4307,6 +5385,246 @@ class App:
         accepted=self.apply_heroes_seconds()
         if accepted:self.heroes_seconds_applied=stamp;self.heroes_interval_hint.configure(text='已自动应用' if stamp[1] else '开启时生效')
         return accepted
+    @staticmethod
+    def valid_skin_position(value):
+        if isinstance(value,(list,tuple)) and len(value)==2 and all(type(n) is int and abs(n)<1000000 for n in value):
+            return tuple(value)
+        return None
+    def remember_skin_position(self):
+        w=self.skin_window
+        if w is None or w.state()!='normal' or not w.winfo_ismapped():return
+        # Store the outer frame, not the client origin below the title bar.
+        try:
+            from ctypes import wintypes as wt
+            user=ctypes.WinDLL('user32');user.GetParent.argtypes=[wt.HWND];user.GetParent.restype=wt.HWND
+            user.GetWindowRect.argtypes=[wt.HWND,ctypes.POINTER(wt.RECT)];rect=wt.RECT()
+            if user.GetWindowRect(user.GetParent(w.winfo_id()) or w.winfo_id(),ctypes.byref(rect)):
+                self.skin_position=(rect.left,rect.top)
+        except (OSError,AttributeError):pass
+    def open_bot_skins(self):
+        if self.skin_window is not None and self.skin_window.winfo_exists():
+            self.skin_window.deiconify();self.skin_window.lift();return
+        window=self.skin_window=tk.Toplevel(self.root,bg=BG);window.withdraw()
+        window.attributes('-alpha',0.0);window.transient(self.root)
+        window.title(self.language.t('指定BOT SKIN 模型'));window.resizable(True,True)
+        self.skin_texts=[];self.skin_choices={};self.skin_items={};self.skin_apply_buttons={};self.skin_rule_buttons={};self.skin_random_buttons={}
+        self.skin_quota_widgets={};self.skin_checks={2:set(),3:set()};self.skin_quota_signature=None
+        outer=tk.Frame(window,bg=BG);outer.pack(fill='both',expand=True,padx=16,pady=14)
+        self.skin_ui_label(outer,'整队设置',size=13,bg=BG).pack(anchor='w')
+        self.skin_ui_label(outer,'按阵营配置默认模型，或让每个 BOT 每回合独立随机。',muted=True,size=9,bg=BG).pack(anchor='w',pady=(2,9))
+        teams=tk.Frame(outer,bg=BG);teams.pack(fill='x');teams.columnconfigure((0,1),weight=1,uniform='teams')
+        for column,team in enumerate((3,2)):
+            box=tk.Frame(teams,bg=CARD,highlightbackground=BORDER,highlightthickness=1)
+            box.grid(row=0,column=column,sticky='nsew',padx=(0,6) if column==0 else (6,0));box.columnconfigure((0,1,2),weight=1)
+            title=label(box,'CT' if team==3 else 'T',size=13);title.configure(fg='#70bbef' if team==3 else '#e1b674')
+            title.grid(row=0,column=0,columnspan=3,sticky='w',padx=12,pady=(9,5))
+            combo=self.skin_combo(box,width=28,state='disabled');combo.grid(row=1,column=0,columnspan=3,sticky='ew',padx=12,pady=(0,10))
+            self.skin_choices[team]=combo;combo.bind('<<ComboboxSelected>>',lambda _,t=team:self.skin_choice_changed(t))
+            for col,(mapping,caption,command) in enumerate(((self.skin_apply_buttons,'应用一次',lambda t=team:self.apply_bot_skins(t)),
+                  (self.skin_rule_buttons,'持续应用',lambda t=team:self.apply_bot_skins(t,True)),
+                  (self.skin_random_buttons,'每回合随机',lambda t=team:self.toggle_skin_random(t)))):
+                btn=ttk.Button(box,text=self.language.t(caption),command=command,style='SkinAction.TButton',width=0)
+                btn.grid(row=2,column=col,sticky='ew',padx=(12 if col==0 else 3,12 if col==2 else 3),pady=(0,12));mapping[team]=btn
+        self.skin_note=label(outer,'',True,9,bg=BG);self.skin_note.pack(anchor='w',pady=(8,12))
+        lower=tk.Frame(outer,bg=CARD,highlightbackground=BORDER,highlightthickness=1);lower.pack(fill='both',expand=True)
+        header=tk.Frame(lower,bg=CARD);header.pack(fill='x',padx=12,pady=(10,0))
+        self.skin_ui_label(header,'逐个配额',size=13).pack(side='left')
+        self.skin_quota_enabled=tk.BooleanVar(value=self.skin_plan['enabled'])
+        self.skin_enable_button=ttk.Checkbutton(header,text=self.language.t('启用逐个配额'),variable=self.skin_quota_enabled,command=self.toggle_skin_quota)
+        self.skin_enable_button.pack(side='right');self.skin_texts.append((self.skin_enable_button,'启用逐个配额'))
+        self.skin_ui_label(lower,'进图前预设，发现 BOT 后自动补位；替补继承该位置的设置。',muted=True,size=9).pack(anchor='w',padx=12,pady=(3,9))
+        toolbar=tk.Frame(lower,bg=CARD);toolbar.pack(fill='x',padx=12)
+        self.skin_team=self.skin_combo(toolbar,values=('CT','T'),width=6,state='readonly');self.skin_team.current(0)
+        self.skin_team.pack(side='left');self.skin_team.bind('<<ComboboxSelected>>',lambda _:self.change_skin_team())
+        self.skin_ui_label(toolbar,'配额数量',muted=True,size=9).pack(side='left',padx=(12,5))
+        self.skin_count=tk.StringVar(value=str(self.skin_plan['counts'][3]))
+        self.skin_count_box=ttk.Spinbox(toolbar,from_=0,to=32,width=4,style='Skin.TSpinbox',textvariable=self.skin_count,command=self.resize_skin_quota)
+        self.skin_count_box.pack(side='left');self.skin_count_box.bind('<Return>',lambda _:self.resize_skin_quota())
+        self.skin_count_box.bind('<FocusOut>',lambda _:self.resize_skin_quota())
+        for title,mode in (('全选','all'),('反选','invert'),('清空选择','none')):
+            self.skin_ui_button(toolbar,title,lambda m=mode:self.select_skin_quotas(m)).pack(side='left',padx=(7,0))
+        self.skin_check_note=label(toolbar,'',True,9);self.skin_check_note.pack(side='right')
+        batch=tk.Frame(lower,bg=CARD);batch.pack(fill='x',padx=12,pady=(9,10))
+        self.skin_batch_choice=self.skin_combo(batch,state='disabled');self.skin_batch_choice.pack(side='left',fill='x',expand=True)
+        self.skin_batch_button=self.skin_ui_button(batch,'批量指定',self.apply_skin_batch_quota,'SkinPrimary.SkinAction.TButton')
+        self.skin_batch_button.pack(side='right',padx=(9,0))
+        self.skin_quota_scroll=ScrollFrame(lower,bg=CARD);self.skin_quota_scroll.pack(fill='both',expand=True,padx=12,pady=(0,8))
+        for child in self.skin_quota_scroll.winfo_children():
+            if isinstance(child,ttk.Scrollbar):child.configure(style='Skin.Vertical.TScrollbar')
+        self.skin_quota_scroll.canvas.configure(height=250)
+        self.skin_mode_note=label(lower,'',True,9);self.skin_mode_note.pack(side='bottom',before=self.skin_quota_scroll,anchor='w',padx=12,pady=(0,9))
+        footer=self.skin_ui_label(outer,'分配器就绪后，新 BOT 首次出生使用指定模型；已在场 BOT 在下次出生更新。',muted=True,size=9,bg=BG,wraplength=830)
+        footer.pack(side='bottom',before=lower,anchor='w',pady=(10,0));self.skin_footer=footer
+        window.bind('<Configure>',lambda e:footer.configure(wraplength=max(300,e.width-40)) if e.widget is window else None,add='+')
+        window.protocol('WM_DELETE_WINDOW',self.close_bot_skins)
+        self.render_skin_quota_rows();self.refresh_skin_buttons()
+        window.update_idletasks();left,top,right,bottom=self.window_work_area(self.skin_position)
+        width=min(max(900,window.winfo_reqwidth()),right-left-32);height=min(max(720,window.winfo_reqheight()),bottom-top-64)
+        window.minsize(min(820,width),min(660,height))
+        x,y=self.skin_position or (self.root.winfo_rootx()+25,self.root.winfo_rooty()+45)
+        x=max(left,min(x,right-width-16));y=max(top,min(y,bottom-height-40))
+        window.geometry(f'{width}x{height}+{x}+{y}')
+        dark_titlebar(window);window.deiconify();window.update_idletasks();dark_titlebar(window);window.attributes('-alpha',1.0)
+        if self.worker:self.worker.submit('skin_panel_watch',enabled=True)
+        self.request_skin_catalog()
+    def close_bot_skins(self):
+        self.skin_view+=1
+        if self.skin_window is not None:
+            self.remember_skin_position();self.skin_window.destroy();self.skin_window=None;self.schedule_save()
+            if self.worker:self.worker.submit('skin_panel_watch',enabled=False)
+    def request_skin_catalog(self):
+        self.skin_view+=1;self.skin_items={}
+        for combo in self.skin_choices.values():combo.set('');combo.configure(state='disabled',values=())
+        self.refresh_skin_buttons();self.skin_note.configure(text=self.language.t('正在读取可用模型…'))
+        if not self.request('bot_skin_catalog',view=self.skin_view,game=self.game_directory):self.skin_note.configure(text=self.language.t('请先选择含角色目录的游戏目录'))
+    def fill_skin_catalog(self,items):
+        for team,combo in self.skin_choices.items():
+            rows=[r for r in items if r['team']==team];self.skin_items[team]=rows
+            combo.configure(values=[f"{r['name']} · {r['id']} · {Path(r['model']).stem}" for r in rows],state='readonly' if rows else 'disabled')
+            for n,row in enumerate(rows):
+                if self.skin_selected.get(team,self.skin_rules.get(team))==row['id']:combo.current(n);break
+        self.render_skin_quota_rows();self.refresh_skin_buttons()
+    def refresh_skin_buttons(self):
+        if self.skin_window is None:return
+        quota=self.skin_plan['enabled']
+        for team,b in self.skin_apply_buttons.items():
+            ok=0<=self.skin_choices[team].current()<len(self.skin_items.get(team,()))
+            running=team in self.skin_rules;pending=team in self.skin_pending;randomized=self.skin_plan['random'][team]
+            b.configure(text=self.language.t('取消等待' if pending else '应用一次'),style='SkinActive.SkinAction.TButton' if pending else 'SkinAction.TButton')
+            b.state(['!disabled'] if not quota and (pending or (ok and not running and not randomized)) else ['disabled'])
+            self.skin_rule_buttons[team].configure(text=self.language.t('停止持续' if running and not randomized else '持续应用'),style='SkinActive.SkinAction.TButton' if running and not randomized else 'SkinAction.TButton')
+            self.skin_rule_buttons[team].state(['!disabled'] if not quota and (running or ok) else ['disabled'])
+            self.skin_random_buttons[team].configure(text=self.language.t('随机已开启' if randomized else '每回合随机'),style='SkinActive.SkinAction.TButton' if randomized else 'SkinAction.TButton')
+            self.skin_random_buttons[team].state(['disabled'] if quota else ['!disabled'])
+            self.skin_choices[team].configure(state='readonly' if not quota and self.skin_items.get(team) else 'disabled')
+        text='整队设置已暂停' if quota else '下次出生时使用指定模型。' if self.ready and self.capabilities.get('bot_skins',{}).get('available') else '可预先配置；等待符合条件的房主对局'
+        if self.skin_plan['enabled'] or self.skin_rules or any(self.skin_plan['random'].values()) or self.skin_pending:
+            text=('整队设置已暂停 · ' if quota else '')+('出生前分配已就绪' if self.skin_spawn_ready else '配置已保存；等待出生前分配器就绪')
+        self.skin_note.configure(text=self.language.t(text))
+    def skin_choice_changed(self,team):
+        n=self.skin_choices[team].current();rows=self.skin_items.get(team,())
+        if not 0<=n<len(rows):return
+        self.skin_selected[team]=rows[n]['id'];self.schedule_save()
+        if not self.skin_plan['enabled']:
+            if team in self.skin_rules and not self.skin_plan['random'][team]:self.request('bot_skin_rule',team=team,skin=rows[n]['id'],enabled=True,view=self.skin_view)
+            elif team in self.skin_pending:self.request('bot_skin_batch',choices={team:rows[n]['id']},view=self.skin_view)
+        self.refresh_skin_buttons()
+    def apply_bot_skins(self,team,continuous=False):
+        if self.skin_plan['enabled']:return False
+        if not continuous and team in self.skin_pending:return self.request('bot_skin_batch',choices={team:None},view=self.skin_view)
+        if continuous and team in self.skin_rules and not self.skin_plan['random'][team]:return self.request('bot_skin_rule',team=team,enabled=False,view=self.skin_view)
+        n=self.skin_choices[team].current();rows=self.skin_items.get(team,())
+        if not 0<=n<len(rows):return False
+        self.skin_selected[team]=rows[n]['id'];self.schedule_save()
+        if continuous:return self.request('bot_skin_rule',team=team,skin=rows[n]['id'],enabled=True,view=self.skin_view)
+        return self.request('bot_skin_batch',choices={team:rows[n]['id']},view=self.skin_view)
+    def skin_combo(self,parent,**kwargs):
+        combo=ttk.Combobox(parent,style='Skin.TCombobox',**kwargs)
+        popup=combo.tk.call('ttk::combobox::PopdownWindow',str(combo))
+        combo.tk.call(f'{popup}.f.sb','configure','-style','Skin.Vertical.TScrollbar')
+        return combo
+    def skin_ui_label(self,parent,text,**kwargs):
+        widget=label(parent,self.language.t(text),**kwargs)
+        self.skin_texts.append((widget,text));return widget
+    def skin_ui_button(self,parent,text,command,style='SkinAction.TButton',**kwargs):
+        widget=ttk.Button(parent,text=self.language.t(text),command=command,style=style,**kwargs)
+        self.skin_texts.append((widget,text));return widget
+    def refresh_skin_text(self):
+        for widget,text in self.skin_texts:
+            if widget.winfo_exists():widget.configure(text=self.language.t(text))
+    def skin_quota_team(self):
+        return 3 if self.skin_team.get()=='CT' else 2
+    def skin_option_list(self,team):
+        rows=self.skin_items.get(team,[])
+        labels=[self.language.t('跟随游戏'),self.language.t('每回合随机')]
+        labels += [f"{r['name']} · {r['id']} · {Path(r['model']).stem}" for r in rows]
+        return [None,-1]+[r['id'] for r in rows],labels
+    def commit_skin_plan(self):
+        self.skin_plan=skin_plan_settings(self.skin_plan)
+        self.skin_plan_serial+=1
+        if self.request('skin_plan',plan=skin_plan_settings(self.skin_plan),revision=self.skin_plan_serial):self.skin_plan_pending=self.skin_plan_serial
+        self.schedule_save();self.refresh_skin_buttons();self.refresh_skin_quota_state()
+    def toggle_skin_quota(self):
+        enabled=self.skin_quota_enabled.get()
+        if enabled and not self.skin_plan.get('seeded'):
+            for team in (3,2):
+                default=-1 if self.skin_plan['random'][team] else self.skin_selected.get(team,self.skin_rules.get(team))
+                self.skin_plan['slots'][team]=[default if value is None else value for value in self.skin_plan['slots'][team]]
+            self.skin_plan['seeded']=True
+        self.skin_plan['enabled']=enabled;self.commit_skin_plan()
+    def toggle_skin_random(self,team):
+        if self.skin_plan['enabled']:return
+        self.skin_plan['random'][team]=not self.skin_plan['random'][team]
+        self.commit_skin_plan()
+    def change_skin_team(self):
+        self.skin_count.set(str(self.skin_plan['counts'][self.skin_quota_team()]))
+        self.render_skin_quota_rows()
+    def resize_skin_quota(self):
+        if self.skin_window is None:return
+        team=self.skin_quota_team()
+        try:count=max(0,min(32,int(self.skin_count.get())))
+        except ValueError:count=self.skin_plan['counts'][team]
+        self.skin_count.set(str(count))
+        if count==self.skin_plan['counts'][team]:return
+        self.skin_plan['counts'][team]=count;self.skin_checks[team].intersection_update(range(count))
+        self.commit_skin_plan();self.render_skin_quota_rows()
+    def select_skin_quotas(self,mode):
+        team=self.skin_quota_team();all_rows=set(range(self.skin_plan['counts'][team]))
+        self.skin_checks[team]=all_rows if mode=='all' else all_rows-self.skin_checks[team] if mode=='invert' else set()
+        self.refresh_skin_quota_state()
+    def toggle_skin_check(self,pos):
+        team=self.skin_quota_team();checks=self.skin_checks[team]
+        if self.skin_quota_widgets[pos]['check'].get():checks.add(pos)
+        else:checks.discard(pos)
+        self.refresh_skin_quota_state()
+    def set_skin_quota(self,pos):
+        team=self.skin_quota_team();combo=self.skin_quota_widgets[pos]['combo'];values,_=self.skin_option_list(team)
+        if not 0<=combo.current()<len(values):return
+        self.skin_plan['slots'][team][pos]=values[combo.current()];self.skin_plan['seeded']=True;self.commit_skin_plan()
+    def apply_skin_batch_quota(self):
+        team=self.skin_quota_team();values,_=self.skin_option_list(team);n=self.skin_batch_choice.current()
+        if not self.skin_checks[team]:self.skin_mode_note.configure(text=self.language.t('请选择配额'));return
+        if not 0<=n<len(values):return
+        for pos in self.skin_checks[team]:self.skin_plan['slots'][team][pos]=values[n]
+        self.skin_plan['seeded']=True;self.commit_skin_plan()
+    def render_skin_quota_rows(self):
+        if self.skin_window is None:return
+        team=self.skin_quota_team();values,titles=self.skin_option_list(team);count=self.skin_plan['counts'][team]
+        signature=(team,count,tuple(titles))
+        if self.skin_quota_signature==signature:self.refresh_skin_quota_state();return
+        self.skin_quota_signature=signature
+        for child in self.skin_quota_scroll.body.winfo_children():child.destroy()
+        self.skin_quota_widgets={};self.skin_batch_choice.configure(values=titles,state='readonly');self.skin_batch_choice.current(0)
+        body=self.skin_quota_scroll.body;body.columnconfigure(3,weight=1)
+        for col,text in ((1,'序号'),(2,'当前 BOT'),(3,'指定模型')):
+            label(body,self.language.t(text),True,9).grid(row=0,column=col,sticky='w',padx=6,pady=(0,5))
+        for pos in range(count):
+            check=tk.BooleanVar(value=pos in self.skin_checks[team])
+            box=ttk.Checkbutton(body,variable=check,command=lambda i=pos:self.toggle_skin_check(i));box.grid(row=pos+1,column=0,padx=(0,4))
+            number=label(body,f'{pos+1:02}',size=10);number.grid(row=pos+1,column=1,sticky='w',padx=6)
+            bot=label(body,self.language.t('空位 · 等待 BOT'),True,9,width=21);bot.grid(row=pos+1,column=2,sticky='w',padx=(6,12))
+            combo=self.skin_combo(body,values=titles,state='readonly',width=34);combo.grid(row=pos+1,column=3,sticky='ew',padx=(0,4),pady=3)
+            combo.bind('<<ComboboxSelected>>',lambda _,i=pos:self.set_skin_quota(i))
+            self.skin_quota_widgets[pos]=dict(check=check,box=box,bot=bot,combo=combo,number=number)
+        self.skin_quota_scroll.canvas.yview_moveto(0);self.refresh_skin_quota_state()
+    def refresh_skin_quota_state(self):
+        if self.skin_window is None or not hasattr(self,'skin_team'):return
+        self.skin_quota_enabled.set(self.skin_plan['enabled'])
+        team=self.skin_quota_team();values,titles=self.skin_option_list(team)
+        if len(self.skin_quota_widgets)!=self.skin_plan['counts'][team]:
+            self.skin_count.set(str(self.skin_plan['counts'][team]));self.render_skin_quota_rows();return
+        rows=self.skin_assignments.get(team,self.skin_assignments.get(str(team),[]))
+        by_pos={r['position']-1:r for r in rows}
+        for pos,w in self.skin_quota_widgets.items():
+            w['check'].set(pos in self.skin_checks[team]);row=by_pos.get(pos,{})
+            text='BOT #'+str(row['index']) if row.get('index') is not None else self.language.t('空位 · 等待 BOT')
+            w['bot'].configure(text=text,fg=TEXT if row.get('index') is not None else MUTED)
+            value=self.skin_plan['slots'][team][pos]
+            n=values.index(value) if value in values else -1
+            if n>=0 and w['combo'].current()!=n:w['combo'].current(n)
+            elif n<0:w['combo'].set('#'+str(value))
+        self.skin_check_note.configure(text=f'{len(self.skin_checks[team])} / {self.skin_plan["counts"][team]}')
+        self.skin_mode_note.configure(text=self.language.t('配额启用后独立生效；整队控制暂停。' if self.skin_plan['enabled'] else '默认使用整队设置；开启后只执行下方配额。'),fg=GREEN if self.skin_plan['enabled'] else MUTED)
     def toggle_heroes_models(self):
         self.heroes_model_open=True
         window=self.heroes_model_window;self.root.update_idletasks();window.update_idletasks()
@@ -4540,6 +5858,8 @@ class App:
         except ValueError as ex:self.log(str(ex),True);return
         self.request('command',text=text.strip())
     def request(self,action,require_ready=True,**data):
+        configuration=action in ('bot_skin_catalog','bot_skin_rule','bot_skin_batch','host_watch','skin_plan','skin_panel_watch') or (action=='ghost' and 'key' not in data)
+        if configuration:require_ready=False
         if action in ('stop','disconnect'):self.auto_connect=False
         elif action=='connect':self.auto_connect=True;self.ensure_worker()
         if require_ready and not self.ready:
@@ -4549,9 +5869,22 @@ class App:
         if require_ready and feature and data.get('enabled',True) and not self.capabilities.get(feature,{}).get('available',False):
             self.log(self.capabilities.get(feature,{}).get('reason','当前功能不可用'),True);self.apply_capabilities();return
         if self.worker:
-            if action=='connect':data['preferences']=dict(enabled=self.vars['each_round'].get(),cheats=self.cheats_desired,features=dict(self.feature_preferences))
+            if action=='connect':data['preferences']=dict(enabled=self.vars['each_round'].get(),cheats=self.cheats_desired,features=dict(self.feature_preferences),teleports=self.teleport_preferences(),host_watch=self.host_preferences())
             accepted=self.worker.submit(action,epoch=self.epoch,**data)
             if accepted:
+                if action=='ghost' and 'key' not in data:self.ghost_desired=bool(data['enabled']);self.update_player_actions();self.schedule_save()
+                if action in ('bot_skin_rule','bot_skin_batch'):
+                    if action=='bot_skin_rule':
+                        team=data['team']
+                        if data['enabled']:self.skin_plan['random'][team]=False
+                        if data['enabled']:self.skin_rules[team]=data['skin']
+                        else:self.skin_rules.pop(team,None)
+                        self.skin_pending.pop(team,None)
+                    else:
+                        for team,skin in data['choices'].items():
+                            if skin is None:self.skin_pending.pop(team,None)
+                            else:self.skin_pending[team]=skin
+                    self.refresh_skin_buttons();self.schedule_save()
                 if action in ('ammo','buy','scale') and data.get('persist',True):
                     value=bool(data['enabled'])
                     if action=='scale' and value:value=dict(head=data['head'],body=data['body'],uniform=data['uniform'],factor=data['factor'])
@@ -4564,13 +5897,21 @@ class App:
     def ensure_worker(self):
         if self.closing or self.worker is None or self.worker.is_alive():return False
         self.worker=Worker(self.events,DATA['caps']);self.worker.each_round=self.vars['each_round'].get();self.worker.cheats_desired=self.cheats_desired
-        self.worker.feature_preferences=dict(self.feature_preferences);self.worker.start()
+        self.worker.feature_preferences=dict(self.feature_preferences)
+        self.worker.round_teleports.configure(self.teleport_preferences());self._teleport_sent=self.teleport_preferences()
+        self.worker.configure_host_watch(self.host_preferences());self.worker.start()
         self.log('连接工作线程已恢复，继续自动发现游戏。');return True
     def stop(self):
         self.invulnerable_targets.clear();self.ghost_targets.clear()
         for key in ('hp_lock_mode','money_lock_mode','invulnerable_mode'):self.vars[key].set(False)
+        for var in self.teleport_modes.values():var.set(False)
+        self.update_player_actions();self.schedule_save()
+        self.ghost_desired=False;self.skin_rules.clear();self.skin_pending.clear()
+        self.skin_plan=skin_plan_settings(dict(self.skin_plan,enabled=False,random={}))
+        self.refresh_skin_buttons();self.refresh_skin_quota_state();self.schedule_save()
         self.request('stop',require_ready=False)
     def reset_flags(self):
+        self.ghost_running=self.ghost_restoring=False
         self.invulnerable_targets.clear();self.ghost_targets.clear()
         for key in ('hp','money','ammo','scale','buy','chat','round_hp','round_money','invulnerable','heroes_auto','heroes_no_wait','heroes_custom_damage','heroes_no_attack'):self.vars[key].set(False)
     def resize_player_columns(self):
@@ -4600,11 +5941,14 @@ class App:
         if p.team==2 and p.ghost_alpha is not None and self.capabilities.get('ghost',{}).get('available',False):
             parts.append(self.language.t('显形' if p.ghost_alpha==255 else '隐身'))
         return ' · '.join(parts)
-    def update_players(self,rows):
+    def update_players(self,rows,restore_selection=None):
         # Group CT, T and spectators; keep the game's real slot IDs intact.
         team_order={3:0,2:1,1:2}
         rows=sorted(rows,key=lambda p:(team_order.get(p.team,3),p.team,p.key.index))
+        old_focus=self.active_player()
         self.players={str(p.key.index):p for p in rows};valid={p.key for p in rows};self.checked.intersection_update(valid)
+        if old_focus and old_focus.key not in valid:
+            self.player_tree.selection_remove(*self.player_tree.selection());self.player_tree.focus('')
         existing=set(self.player_tree.get_children())
         for iid,p in self.players.items():
             values=('☑' if p.key in self.checked else '☐',p.key.index,p.name+('  · '+self.language.t('自己') if p.local else ''),p.health,('—' if p.money<0 else p.money),self.language.t({1:'观战',2:'T',3:'CT'}.get(p.team,str(p.team))),self.player_status(p))
@@ -4612,31 +5956,69 @@ class App:
             if iid in existing:self.player_tree.item(iid,values=values,tags=tags)
             else:self.player_tree.insert('','end',iid=iid,values=values,tags=tags)
         for iid in existing-set(self.players):self.player_tree.delete(iid)
+        if restore_selection is not None:
+            _,focus,checks=restore_selection
+            self.checked=checks.intersection(valid)
+            if focus in valid:
+                iid=str(focus.index);self.player_tree.selection_set(iid);self.player_tree.focus(iid)
         order=tuple(self.players)
         if tuple(self.player_tree.get_children())!=order:
             # Moving existing items retains their selection, focus and checkbox identity.
             for position,iid in enumerate(order):self.player_tree.move(iid,'',position)
         if rows:self.empty_label.place_forget()
         else:self.empty_label.place(relx=.5,rely=.5,anchor='center')
-        self.resize_player_columns();self.draw_selection();self.update_player_actions()
+        self.resize_player_columns();self.draw_selection()
     def poll(self):
         try:
             while True:
                 kind,data=self.events.get_nowait()
                 if kind=='state':
+                    old_epoch=self.epoch
                     self.capabilities=data.get('capabilities',{});self.command_states=data.get('command_status',{})
                     self.ready=data['ready'];self.epoch=data.get('epoch',-1);self.status.configure(text=('●  ' if self.ready else '○  ')+data['text'],fg=GREEN if self.ready else MUTED)
-                    self.update_players(data.get('players',[]))
+                    if old_epoch!=self.epoch:
+                        self.waiting_roster=None
+                        if old_epoch>=0:
+                            for var in self.teleport_modes.values():var.set(False)
+                    roster_ok=self.ready and self.capabilities.get('roster',{}).get('available',False)
+                    if roster_ok:
+                        saved=self.waiting_roster;self.waiting_roster=None
+                        self.update_players(data.get('players',[]),saved)
+                    else:
+                        if self.waiting_roster is None and old_epoch==self.epoch and self.players:
+                            focus=self.active_player()
+                            self.waiting_roster=(self.epoch,focus.key if focus else None,set(self.checked))
+                        self.update_players([])
                     if 'cheats' in data:self.last_cheats=data['cheats'];self.vars['cheats'].set(data['cheats'])
+                    self.refresh_skin_buttons()
                 elif kind=='connection':
                     self.needs_admin=bool(data.get('requires_admin'));self.connect_button.configure(text='管理员连接' if self.needs_admin else '连接游戏')
                     self.status.configure(text='○ '+('连接受阻 · 需要管理员权限 · 自动重试中' if self.needs_admin and data.get('retrying') else data['text']),fg=MUTED if data.get('connected') or data.get('retrying') or data.get('pending') else RED)
                 elif kind in ('log','error'):self.log(data['text'],kind=='error')
+                elif kind=='skin_trace':self.write_skin_trace(data['record'])
                 elif kind=='reset':
-                    self.reset_flags();self.checked.clear();self.draw_selection();self.machine_rows=[];self.machine_choice.set('');self.machine_box.configure(values=[])
+                    self.skin_plan_pending=0
+                    if not data.get('keep_teleports'):
+                        self.waiting_roster=None
+                        for var in self.teleport_modes.values():var.set(False)
+                        self.checked.clear();self.update_players([])
+                    self.reset_flags();self.machine_rows=[];self.machine_choice.set('');self.machine_box.configure(values=[])
                     self.bio_status.configure(text='进入生化 ZETA 后可读取次数和机器列表。')
                     self.heroes_damage_note.configure(text='当前使用原生伤害')
                     self.update_heroes_models([]);self.update_heroes_levels([]);self.vars['heroes_temple'].set(False);self.heroes_status.configure(text='仅本地房主的洛奇英雄传对局可用。')
+                elif kind=='host_watch':
+                    prefs=data['preferences'];self.ghost_desired=prefs['ghost'];self.skin_rules=dict(prefs['skins']);self.skin_pending=dict(data['pending'])
+                    if data.get('plan_revision',0)>=self.skin_plan_pending:
+                        self.skin_plan=skin_plan_settings(prefs.get('skin_plan'));self.skin_plan_pending=0
+                    self.skin_assignments=data.get('assignments',{})
+                    self.skin_spawn_ready=data.get('spawn_ready',False)
+                    self.refresh_skin_quota_state()
+                    self.refresh_skin_buttons();self.update_player_actions();self.schedule_save()
+                elif kind=='bot_skins':
+                    if self.skin_window is not None and self.skin_view==data['view']:
+                        self.skin_rules=data['rules']
+                        if 'rows' in data:self.fill_skin_catalog(data['rows'])
+                        else:self.skin_note.configure(text=data['text']);self.refresh_skin_buttons()
                 elif kind=='heroes_models':self.update_heroes_models(data['rows'],data.get('reason',''))
                 elif kind=='heroes_levels':self.update_heroes_levels(data['rows'],data.get('reason',''))
                 elif kind=='heroes_state':
@@ -4649,16 +6031,27 @@ class App:
                 elif kind=='invulnerability_targets':
                     self.invulnerable_targets=set(data['keys']);self.vars['invulnerable_auto'].set(data['auto']);self.refresh_invulnerability_ui()
                 elif kind=='ghost_targets':
-                    self.ghost_targets=set(data['keys']);self.update_player_actions()
+                    self.ghost_targets=set(data['keys']);self.ghost_running=data['running'];self.ghost_restoring=data['restoring'];self.update_player_actions()
                 elif kind=='flags':
                     for k,v in data.items():self.vars[k].set(v)
                 elif kind=='closed':
-                    if self.closing:self.root.destroy();return
+                    if self.closing:
+                        if self.persist_logs:HostLogArchive.sweep(self.path)
+                        self.root.destroy();return
         except queue.Empty:pass
         self.apply_capabilities()
         if not self.closing and self.auto_connect and self.ensure_worker():
-            self.worker.submit('connect',game=self.game_directory)
+            self.request('connect',require_ready=False,game=self.game_directory)
         if self.root.winfo_exists():self.root.after(100,self.poll)
+    def write_skin_trace(self,record):
+        if not self.persist_logs:return
+        # Fixed technical fields, written into the same total-log package.
+        fields=('event','state','seq','result','bot','team','policy','model','position','round_ready','expected','current','count')
+        row={key:record[key] for key in fields if key in record}
+        row['time']=time.strftime('%Y-%m-%dT%H:%M:%S%z')
+        try:
+            HostLogArchive.append(self.path.with_suffix('.skin-events.jsonl'),json.dumps(row,separators=(',',':'))+'\n')
+        except OSError:self.hint.configure(text=self.language.t('换肤诊断日志暂时无法写入'),fg=RED)
     def log(self,text,error=False):
         text=str(text);line=time.strftime('%H:%M:%S')+'  '+self.language.t(text)
         self.logs.append(line);self.logs=self.logs[-500:]
@@ -4671,9 +6064,7 @@ class App:
         self.log_text.see('end');self.log_text.configure(state='disabled')
         if self.persist_logs:
             try:
-                if self.log_path.exists() and self.log_path.stat().st_size>1048576:self.log_path.replace(self.log_path.with_suffix('.log.1'))
-                with self.log_path.open('a',encoding='utf-8') as f:
-                    f.write(time.strftime('%Y-%m-%d %H:%M:%S')+(' [错误] ' if error else ' [操作] ')+text.replace('\n',' | ')+'\n')
+                HostLogArchive.append(self.path.with_suffix('.run.log'),time.strftime('%Y-%m-%d %H:%M:%S')+(' [错误] ' if error else ' [操作] ')+text.replace('\n',' | ')+'\n')
             except OSError:self.hint.configure(text=preview+'（日志文件无法写入）',fg=RED)
     def collect_settings(self):
         settings={k:self.vars[k].get() for k in ('hp_value','money_value','head','body','model_scale','scale_uniform','invulnerable_auto','interval','chat_team','bot_count','mutation_count','heroes_wave','heroes_seconds','heroes_atk','heroes_hp','heroes_damage_value','each_round')}
@@ -4684,6 +6075,8 @@ class App:
         settings['chat_text']=self.chat_text.get('1.0','end-1c')
         settings['cheats_desired']=self.cheats_desired;settings['difficulty']=self.difficulty.current()
         settings['feature_preferences']=dict(self.feature_preferences)
+        settings['host_watch']=self.host_preferences();settings['skin_selected']=dict(self.skin_selected)
+        if self.skin_position is not None:settings['skin_dialog_position']=list(self.skin_position)
         return settings
     def watch_setting(self,var):
         previous=[var.get()]
@@ -4720,6 +6113,15 @@ class App:
         self.settings_loading=True
         try:
             for key,value in defaults.items():self.vars[key].set(settings.get(key,value))
+            self.skin_position=self.valid_skin_position(settings.get('skin_dialog_position'))
+            self.load_host_preferences(settings)
+            self.waiting_roster=None
+            if self.skin_window is not None:self.fill_skin_catalog([r for rows in self.skin_items.values() for r in rows])
+            self.checked.clear()
+            for var in self.teleport_modes.values():var.set(False)
+            selected=self.player_tree.selection()
+            if selected:self.player_tree.selection_remove(*selected)
+            self.draw_selection()
             self.game_directory=settings.get('game_directory','');self.cheats_desired=bool(settings.get('cheats_desired',False))
             self.feature_preferences=dict(settings.get('feature_preferences',{}))
             if not self.ready:self.vars['cheats'].set(self.cheats_desired)
@@ -4745,6 +6147,8 @@ class App:
             return
         if not undoing and self.worker:self.worker.submit('reset_defaults')
         self.change_each_round()
+        self._teleport_sent=None;self.sync_teleport_preferences()
+        self.request('host_watch',require_ready=False,preferences=self.host_preferences())
         desired=self.undo_runtime if undoing else {'cheats':False,'ammo':False,'buy':False,'scale':False}
         if self.ready:
             for key in ('ammo','buy'):
@@ -4765,13 +6169,20 @@ class App:
         try:
             target=Path(dest)
             if target.resolve()==self.path.resolve():self.save();return
-            shutil.copyfile(self.path,target);portable_save(target,self.collect_settings());self.log('便携副本已导出：'+str(target))
+            fd,staged=tempfile.mkstemp(prefix='.'+target.stem+'-',suffix='.tmp',dir=target.parent)
+            os.close(fd)
+            try:
+                shutil.copyfile(self.path,staged)
+                portable_save(staged,self.collect_settings())
+                os.replace(staged,target)
+            finally:Path(staged).unlink(missing_ok=True)
+            self.log('便携副本已导出：'+str(target))
         except Exception as ex:self.log('导出失败：'+str(ex),True)
     def callback_error(self,kind,error,tb):
         import traceback
         self.log('界面错误：'+str(error),True)
         path=self.path.with_suffix('.error.log')
-        try:path.write_text(''.join(traceback.format_exception(kind,error,tb)),encoding='utf-8')
+        try:HostLogArchive.append(path,''.join(traceback.format_exception(kind,error,tb)))
         except OSError:pass
     def mousewheel(self,event):
         if self._is_combobox_popup_path(getattr(event,'widget','')):
@@ -4788,10 +6199,12 @@ class App:
         self.root.deiconify();self.root.update_idletasks();dark_titlebar(self.root)
     def close(self):
         if self.closing:return
+        self.remember_skin_position()
         self.save()
         self.undo_defaults=None;self.undo_runtime=None
         self.auto_connect=False
         self.closing=True;self.status.configure(text='正在停止持续功能并关闭…',fg=MUTED)
+        if self.persist_logs:HostLogArchive.sweep(self.path)
         if self.worker:self.worker.quit.set()
         else:self.root.destroy()
 
@@ -4815,11 +6228,15 @@ class App:
         else:self.log_frame.pack(fill='x',pady=(7,0));self.log_button.configure(text='收起日志')
         self.queue_window_fit()
 
+    def archive_logs(self):
+        if self.closing:return
+        try:HostLogArchive.sweep(self.path)
+        finally:self.root.after(30000,self.archive_logs)
     def open_log(self):
         if self.log_path.is_file():
-            import os
             os.startfile(str(self.log_path))
-        else:self.log('还没有保存的操作日志。')
+            return
+        self.log('还没有保存的操作日志。')
 
 # GitHub release updates: repository identity survives repository renames/transfers.
 APP_ID = 'cso2-host-tool'
@@ -4936,7 +6353,7 @@ def validate_update_source(payload, version):
     import ast
     if not 0 < len(payload) <= UPDATE_MAX_BYTES:
         raise ValueError('Invalid update size')
-    source = payload.decode('utf-8-sig')
+    source = payload.decode('utf-8-sig').replace('\r\n','\n')
     tree = ast.parse(source)
     wanted = {'APP_ID': APP_ID, 'APP_VERSION': version, 'UPDATE_REPOSITORY_ID': UPDATE_REPOSITORY_ID,
               'UPDATE_PROTOCOL': UPDATE_PROTOCOL}
@@ -5228,8 +6645,10 @@ def main(path=None,settings=None):
         root.mainloop()
     except Exception:
         import traceback
-        logfile=Path(path or __file__).with_suffix('.error.log');logfile.write_text(traceback.format_exc(),encoding='utf-8')
-        ctypes.windll.user32.MessageBoxW(None,'启动失败，详情已写入：\n'+str(logfile),TITLE,0x10)
+        logfile=Path(path or __file__).with_suffix('.error.log')
+        HostLogArchive.append(logfile,traceback.format_exc())
+        HostLogArchive.flush(10.)
+        ctypes.windll.user32.MessageBoxW(None,'启动失败，总日志：\n'+str(HostLogArchive.archive_path(path or __file__)),TITLE,0x10)
 
 
 

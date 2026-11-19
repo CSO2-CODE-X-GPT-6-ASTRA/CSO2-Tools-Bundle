@@ -13,6 +13,7 @@ on:
       - '.github/scripts/publish_tools.py'
       - '.github/scripts/publish_bundle.py'
       - '.github/scripts/publish_bot_refresh.py'
+      - '.github/scripts/publish_host_refresh.py'
   workflow_dispatch:
 
 permissions:
@@ -36,8 +37,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TOOL_REPOSITORY_ID: ${{ github.repository_id }}
           BOT_REFRESH_ONLY: ${{ contains(github.event.head_commit.message, '[bot-release]') }}
+          HOST_REFRESH_ONLY: ${{ contains(github.event.head_commit.message, '[host-release]') }}
         run: |
-          if [ "$BOT_REFRESH_ONLY" = "true" ]; then
+          if [ "$HOST_REFRESH_ONLY" = "true" ]; then
+            python .github/scripts/publish_host_refresh.py
+          elif [ "$BOT_REFRESH_ONLY" = "true" ]; then
             python .github/scripts/publish_bot_refresh.py
           else
             python .github/scripts/publish_bundle.py
