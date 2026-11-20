@@ -5,6 +5,10 @@
 
 - **CSO2 Host Tool** — Player management, match settings and commands.
 
+  Validation: the published source matches the build that passed 38 scoped checks. No full CHECK was run; live gameplay still needs confirmation, including special Boss attacks already in progress.
+
+  This refresh keeps **v1.0.0**. If you already have v1.0.0, download `cso2-host-tool.pyw` again; the current updater only offers higher version numbers. The download contains empty personal settings.
+
   <dl><dd>
 
   <details>
@@ -28,10 +32,6 @@
   <p>Added bot skin selection.<br>CT and T can each use random female or male characters. Each bot draws its own skin every round.</p>
   </dd></dl>
   </details>
-
-  Validation: the published source matches the build that passed 38 scoped checks. No full CHECK was run; live gameplay still needs confirmation, including special Boss attacks already in progress.
-
-  This refresh keeps **v1.0.0**. If you already have v1.0.0, download `cso2-host-tool.pyw` again; the current updater only offers higher version numbers. The download contains empty personal settings.
 
   </dd></dl>
 
@@ -75,6 +75,10 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
 - **CSO2 Host Tool · 房主工具** — 玩家管理、对局设置与指令。
 
+  验证：发布源码与通过 38 项专项检查的版本一致。未运行全量 CHECK；游戏实际效果仍待确认，包括特殊 Boss 已开始的攻击动作。
+
+  本次保持 **v1.0.0**。已安装 v1.0.0 的用户请重新下载 `cso2-host-tool.pyw`，当前自动更新只提示更高版本号。下载文件中的个人设置为空。
+
   <dl><dd>
 
   <details>
@@ -98,10 +102,6 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
   <p>新增 BOT 换皮肤机制。<br>CT 和 T 的整队下拉框均可选择「全部随机女性角色」或「全部随机男性角色」，每个 BOT 每回合独立抽取。</p>
   </dd></dl>
   </details>
-
-  验证：发布源码与通过 38 项专项检查的版本一致。未运行全量 CHECK；游戏实际效果仍待确认，包括特殊 Boss 已开始的攻击动作。
-
-  本次保持 **v1.0.0**。已安装 v1.0.0 的用户请重新下载 `cso2-host-tool.pyw`，当前自动更新只提示更高版本号。下载文件中的个人设置为空。
 
   </dd></dl>
 
