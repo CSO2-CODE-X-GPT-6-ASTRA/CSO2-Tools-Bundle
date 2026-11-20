@@ -2472,7 +2472,9 @@ def skin_plan_settings(value=None):
     value=value if isinstance(value,dict) else {}
     counts=value.get('counts',{});slots=value.get('slots',{});randoms=value.get('random',{})
     counts=counts if isinstance(counts,dict) else {};slots=slots if isinstance(slots,dict) else {};randoms=randoms if isinstance(randoms,dict) else {}
-    result=dict(enabled=bool(value.get('enabled')),seeded=bool(value.get('seeded')),counts={},slots={},random={})
+    genders=value.get('gender')
+    genders=genders if isinstance(genders,dict) else {}
+    result=dict(enabled=bool(value.get('enabled')),seeded=bool(value.get('seeded')),counts={},slots={},random={},gender={})
     for team in (3,2):
         count=counts.get(team,counts.get(str(team),10))
         result['counts'][team]=max(0,min(32,count)) if type(count) is int else 10
@@ -2481,11 +2483,13 @@ def skin_plan_settings(value=None):
         result['slots'][team]=[v if type(v) is int and -1<=v<=1000000 else None for v in values[:32]]
         result['slots'][team]+=[None]*(32-len(result['slots'][team]))
         result['random'][team]=bool(randoms.get(team,randoms.get(str(team),False)))
+        gender=genders.get(team,genders.get(str(team)))
+        result['gender'][team]=gender if type(gender) is int and gender in (1,2) else 0
     return result
 
 SKIN_TICK_IMPORT = bytes.fromhex('3c6f9a00')
 def skin_spawn_code(control):
-    code=bytes.fromhex('9c6089cebb443322116a015fe863000000619dff2550332211909090909090905589e551ff7510ff750cff7508b844332211ff50109c608b75fcbb443322116a025fe82d000000619d89ec5dc20c0090909090909090909090909090909090909c6089cebb443322116a035fe803000000619dc3837b04010f856305000031c0ba01000000f00fb153380f8551050000ff434c89bb80000000c7838400000000000000c7435000000000c7435400000000c78388000000ffffffffc7838c00000000000000c7839800000000000000c7839c000000feffffffc783a000000000000000837b04010f858e040000ff53442b43480f8f820400008b7b0885ff0f84770400008b431405d0688e0039060f8567040000c78384000000010000008b43188b80a0218d0089437885c00f84490400008b0885c90f843f0400008b531881c2a05112003951180f852d04000083b8ac000000010f8520040000c78384000000020000000fb6ae0102000083ed0283fd010f87030400008d45028983a00000008b531481c254faa500b9010000003932740e83c2104183f94076f3e9da030000894b508b42048943548b43148b907c90c5008b4b78394b7c752085d20f84a4000000837b20007430395320750d8b8af40200003b4b247202eb1e50578b7b3c31c0b980050000fcf3ab5f588b4b78894b7cc743200000000085d2746a81baf402000080969800775e0fb682fc02000083f8017752c7838c0000000100000039532075288b8af4020000394b24751d85c07408837b2c007413eb14837b2c00750e8b8a04030000394b287403ff431c89532089432c8b8af4020000894b248b8a04030000894b2869c50011000001c7897b588b435048c1e00569cd0008000001c803433c89435c393075088b4b54394804741d89308b4b54894804c74010feffffffc74018feffffffc7401cffffffff833f000f8480020000833f030f85f400000069cd00030000034b40894b60578b57086bfa1801cf51b92000000029d16bc90631c0fcf3ab595f31d2c7436400000000c74368000000003b570873678b410885c0745183f840773fc1e0040343140544faa500528b103911752c8b400439410475248b431405d0688e00390275180fb6820102000083e80239e8750a39f27503894b685aeb175ac70100000000c7410800000000837b64007503894b6483c11842eb948b4b6885c975198b4b6485c90f84b601000089318b43548941048b435089410889c82b436031d251b918000000f7f1598d50018993980000008b44871039410c740a89410cc74114ffffffff83c110eb138b4704833f027505b8ffffffff8b4b5c83c11889839c00000083f8fe0f846101000083f8ff0f85d7000000c783840000000300000083bb8c000000000f8483010000c78384000000040000008b531c395104750f8b01e8d101000085d20f85b6000000837f0c000f8458010000817f0c000400000f874b010000894b6cc78390000000ffffffff8b433089c2c1e20d31d089c2c1ea1131d089c2c1e20531d089433031d2f7770c8953708b470c8943748b53708b849790000000e86d01000085d2740d8b4b6c3b01752e898390000000ff43708b570c3953707207c7437000000000ff4b7475c98b839000000085c00f88d00000008b4b6c89018b531c895104eb17c7838400000004000000e81b01000085d20f84ac0000008b7b5cba0100000029ea8d8c9688210000837f10fe74148b113b571074038957088b51083b5714740deb058b118957088b510889570c898388000000c78384000000050000008901c74108ffffffff894710c74714ffffffffff4334eb4ec7838400000006000000eb0ac78384000000070000008b7b5c837f10fe742fba0100000029ea8d8c96882100008b113b571075058b570889118b51083b571475068b570c895108c74710feffffff83bb840000000074538b839400000083e03f6bc0248dbc0300180000fc8b8380000000ab8b8384000000ab8b4350ab8b83a0000000ab8b839c000000ab8b8388000000ab8b8398000000ab8b838c000000ab8b4354abff8394000000ff434cc7433800000000c35157508b53148b927090c50085d2744d8b0a8b7b1881c750543000397968753db90b00000029e96bc90c01ca8b0a8b7a0485c9742839f973243b7a08771f89fa29ca81fa001000007713f7c203000000750b3901740b83c10439f972f531d2eb05ba01000000585f59c3')
+    code=bytes.fromhex('9c6089cebb443322116a015fe863000000619dff2550332211909090909090905589e551ff7510ff750cff7508b844332211ff50109c608b75fcbb443322116a025fe82d000000619d89ec5dc20c0090909090909090909090909090909090909c6089cebb443322116a035fe803000000619dc3837b04010f859705000031c0ba01000000f00fb153380f8585050000ff434c89bb80000000c7838400000000000000c7435000000000c7435400000000c78388000000ffffffffc7838c00000000000000c7839800000000000000c7839c000000feffffffc783a000000000000000837b04010f85c2040000ff53442b43480f8fb60400008b7b0885ff0f84ab0400008b431405d0688e0039060f859b040000c78384000000010000008b43188b80a0218d0089437885c00f847d0400008b0885c90f84730400008b531881c2a05112003951180f856104000083b8ac000000010f8554040000c78384000000020000000fb6ae0102000083ed0283fd010f87370400008d45028983a00000008b531481c254faa500b9010000003932740e83c2104183f94076f3e90e040000894b508b42048943548b43148b907c90c5008b4b78394b7c752085d20f84a4000000837b20007430395320750d8b8af40200003b4b247202eb1e50578b7b3c31c0b980050000fcf3ab5f588b4b78894b7cc743200000000085d2746a81baf402000080969800775e0fb682fc02000083f8017752c7838c0000000100000039532075288b8af4020000394b24751d85c07408837b2c007413eb14837b2c00750e8b8a04030000394b287403ff431c89532089432c8b8af4020000894b248b8a04030000894b2869c50011000001c7897b588b435048c1e00569cd0008000001c803433c89435c393075088b4b54394804741d89308b4b54894804c74010feffffffc74018feffffffc7401cffffffff833f000f84b4020000833f030f85f400000069cd00030000034b40894b60578b57086bfa1801cf51b92000000029d16bc90631c0fcf3ab595f31d2c7436400000000c74368000000003b570873678b410885c0745183f840773fc1e0040343140544faa500528b103911752c8b400439410475248b431405d0688e00390275180fb6820102000083e80239e8750a39f27503894b685aeb175ac70100000000c7410800000000837b64007503894b6483c11842eb948b4b6885c975198b4b6485c90f84ea01000089318b43548941048b435089410889c82b436031d251b918000000f7f1598d50018993980000008b44871039410c740a89410cc74114ffffffff83c110eb138b4704833f027505b8ffffffff8b4b5c83c11889839c00000083f8fe0f849501000083f8ff0f850b010000c783840000000300000083bb8c00000000750a837f04fd0f85b1010000c78384000000040000008b531c39510475328b01837f04fd751d8b570c81fa000400000f87b600000085d274174a3b84979000000075f2e8dc01000085d20f85c1000000837f0c000f8491000000817f0c000400000f8756010000894b6cc78390000000ffffffff8b433089c2c1e20d31d089c2c1ea1131d089c2c1e20531d089433031d2f7770c8953708b470c8943748b53708b849790000000e87801000085d2740d8b4b6c3b01752a898390000000ff43708b570c3953707207c7437000000000ff4b7475c98b839000000085c0780d8b4b6c89018b531c895104eb26837f04fd0f8490000000e9c3000000c7838400000004000000e81b01000085d20f84ac0000008b7b5cba0100000029ea8d8c9688210000837f10fe74148b113b571074038957088b51083b5714740deb058b118957088b510889570c898388000000c78384000000050000008901c74108ffffffff894710c74714ffffffffff4334eb4ec7838400000006000000eb0ac78384000000070000008b7b5c837f10fe742fba0100000029ea8d8c96882100008b113b571075058b570889118b51083b571475068b570c895108c74710feffffff83bb840000000074538b839400000083e03f6bc0248dbc0300180000fc8b8380000000ab8b8384000000ab8b4350ab8b83a0000000ab8b839c000000ab8b8388000000ab8b8398000000ab8b838c000000ab8b4354abff8394000000ff434cc7433800000000c35157508b53148b927090c50085d2744d8b0a8b7b1881c750543000397968753db90b00000029e96bc90c01ca8b0a8b7a0485c9742839f973243b7a08771f89fa29ca81fa001000007713f7c203000000750b3901740b83c10439f972f531d2eb05ba01000000585f59c3')
     return code.replace(struct.pack('<I',0x11223344),struct.pack('<I',control)).replace(struct.pack('<I',0x11223350),struct.pack('<I',control+12))
 
 class BotSkinSpawnHook:
@@ -2658,7 +2662,10 @@ def skin_spawn_config(plan,rules,pending,rows):
         offset=native*0x1100
         fixed=rules.get(team,pending.get(team))
         mode=3 if plan['enabled'] else 2 if plan['random'][team] else 1 if fixed is not None else 0
-        pool=sorted({r['id'] for r in rows if r['team']==team and type(r['id']) is int and 0<=r['id']<=1000000})
+        gender=plan.get('gender',{}).get(team,0) if mode==2 else 0
+        pool=sorted({r['id'] for r in rows if r['team']==team and (not gender or r.get('gender')==gender)
+                     and type(r['id']) is int and 0<=r['id']<=1000000})
+        if gender:fixed=-3  # Filtered team draw. Restore game defaults if the pool has no usable model.
         if len(pool)>1024:raise NotReady('BOT 模型目录超过支持范围')
         values=[-2 if value is None else value for value in plan['slots'][team]]
         struct.pack_into('<4i',blob,offset,mode,fixed if fixed is not None else -2,plan['counts'][team],len(pool))
@@ -2722,7 +2729,8 @@ class HostBotSkins:
                 if row.get('mod')!='0' or team is None:continue
                 model=row['worldmodel'].replace('\\','/').strip()
                 if not model.lower().startswith('models/player/') or not model.lower().endswith('.mdl'):continue
-                result.append(dict(id=skin,team=team,name=row['resname'],model=model))
+                gender=(row.get('gender') or '').strip()
+                result.append(dict(id=skin,team=team,name=row['resname'],model=model,gender=int(gender) if gender in ('1','2') else 0))
             except (KeyError,TypeError,ValueError):continue
         return result
     def player(self,index):
@@ -3633,6 +3641,9 @@ class Worker(threading.Thread):
             self.skin_plan_revision=data.get('revision',self.skin_plan_revision)
             self.bot_skins.configure_plan(data['plan'])
             plan=self.bot_skins.plan
+            for team in (2,3):
+                if plan['gender'][team] and plan['random'][team] and not plan['enabled']:
+                    self.bot_skins.rules.pop(team,None)
             for team in list(self.skin_once):
                 if plan['enabled'] or plan['random'].get(team):self.skin_once.pop(team,None)
             self.auto_paused=False;self.emit_host_watch();return
@@ -4012,6 +4023,8 @@ EN = {
  '启用逐个配额':'Enable individual quotas',
  '整队设置已暂停':'Team settings paused',
  '每回合随机':'Random each round',
+ '全部随机女性角色':'Random female characters',
+ '全部随机男性角色':'Random male characters',
  '随机已开启':'Random enabled',
  '配额数量':'Quota count',
  '反选':'Invert selection',
@@ -4049,7 +4062,7 @@ EN = {
  '前往此人\n每新对局生效中':'Go to player\nActive each new match','传送过来\n每新对局生效中':'Bring players\nActive each new match',
  '每局传送设置已保存':'Automatic teleport settings saved','每局传送已入队：#':'Automatic teleport queued: #',
  '每局传送等待：':'Automatic teleport waiting: ',
-
+ 
  '复制名字':'Copy name','操作高亮玩家':'Act on highlighted player','请先点选一名玩家':'Select a player first',
  '请先连接游戏并进入对局':'Connect and join a match first','不能对自己执行此操作':'Cannot use this action on yourself',
  '观战或电视实体不能作为此操作目标':'This action cannot target a spectator or TV entity',
@@ -5477,47 +5490,74 @@ class App:
         for combo in self.skin_choices.values():combo.set('');combo.configure(state='disabled',values=())
         self.refresh_skin_buttons();self.skin_note.configure(text=self.language.t('正在读取可用模型…'))
         if not self.request('bot_skin_catalog',view=self.skin_view,game=self.game_directory):self.skin_note.configure(text=self.language.t('请先选择含角色目录的游戏目录'))
-    def fill_skin_catalog(self,items):
+    def team_skin_options(self,team):
+        rows=self.skin_items.get(team,[])
+        options=[('female',self.language.t('全部随机女性角色')),('male',self.language.t('全部随机男性角色'))]
+        options.extend((r['id'],f"{r['name']} · {r['id']} · {Path(r['model']).stem}") for r in rows)
+        return options
+    def selected_team_option(self,team):
+        n=self.skin_choices[team].current()
+        if n in (0,1):return ('female','male')[n]
+        rows=self.skin_items.get(team,())
+        return rows[n-2]['id'] if 2<=n<len(rows)+2 else None
+    def refresh_team_options(self):
         for team,combo in self.skin_choices.items():
-            rows=[r for r in items if r['team']==team];self.skin_items[team]=rows
-            combo.configure(values=[f"{r['name']} · {r['id']} · {Path(r['model']).stem}" for r in rows],state='readonly' if rows else 'disabled')
-            for n,row in enumerate(rows):
-                if self.skin_selected.get(team,self.skin_rules.get(team))==row['id']:combo.current(n);break
+            options=self.team_skin_options(team)
+            selected={1:'male',2:'female'}.get(self.skin_plan['gender'][team],self.skin_selected.get(team,self.skin_rules.get(team)))
+            combo.configure(values=[label for _,label in options])
+            combo.set('')
+            for n,(key,_) in enumerate(options):
+                if selected==key:combo.current(n);break
+    def fill_skin_catalog(self,items):
+        self.skin_items={team:[r for r in items if r['team']==team] for team in (2,3)}
+        self.refresh_team_options()
         self.render_skin_quota_rows();self.refresh_skin_buttons()
     def refresh_skin_buttons(self):
         if self.skin_window is None:return
         quota=self.skin_plan['enabled']
         for team,b in self.skin_apply_buttons.items():
-            ok=0<=self.skin_choices[team].current()<len(self.skin_items.get(team,()))
+            ok=type(self.selected_team_option(team)) is int
             running=team in self.skin_rules;pending=team in self.skin_pending;randomized=self.skin_plan['random'][team]
             b.configure(text=self.language.t('取消等待' if pending else '应用一次'),style='SkinActive.SkinAction.TButton' if pending else 'SkinAction.TButton')
             b.state(['!disabled'] if not quota and (pending or (ok and not running and not randomized)) else ['disabled'])
             self.skin_rule_buttons[team].configure(text=self.language.t('停止持续' if running and not randomized else '持续应用'),style='SkinActive.SkinAction.TButton' if running and not randomized else 'SkinAction.TButton')
-            self.skin_rule_buttons[team].state(['!disabled'] if not quota and (running or ok) else ['disabled'])
+            self.skin_rule_buttons[team].state(['!disabled'] if not quota and (running or ok) and not self.skin_plan['gender'][team] else ['disabled'])
             self.skin_random_buttons[team].configure(text=self.language.t('随机已开启' if randomized else '每回合随机'),style='SkinActive.SkinAction.TButton' if randomized else 'SkinAction.TButton')
             self.skin_random_buttons[team].state(['disabled'] if quota else ['!disabled'])
-            self.skin_choices[team].configure(state='readonly' if not quota and self.skin_items.get(team) else 'disabled')
+            self.skin_choices[team].configure(state='readonly' if not quota and team in self.skin_items else 'disabled')
         text='整队设置已暂停' if quota else '下次出生时使用指定模型。' if self.ready and self.capabilities.get('bot_skins',{}).get('available') else '可预先配置；等待符合条件的房主对局'
         if self.skin_plan['enabled'] or self.skin_rules or any(self.skin_plan['random'].values()) or self.skin_pending:
             text=('整队设置已暂停 · ' if quota else '')+('出生前分配已就绪' if self.skin_spawn_ready else '配置已保存；等待出生前分配器就绪')
         self.skin_note.configure(text=self.language.t(text))
     def skin_choice_changed(self,team):
-        n=self.skin_choices[team].current();rows=self.skin_items.get(team,())
-        if not 0<=n<len(rows):return
-        self.skin_selected[team]=rows[n]['id'];self.schedule_save()
-        if not self.skin_plan['enabled']:
-            if team in self.skin_rules and not self.skin_plan['random'][team]:self.request('bot_skin_rule',team=team,skin=rows[n]['id'],enabled=True,view=self.skin_view)
-            elif team in self.skin_pending:self.request('bot_skin_batch',choices={team:rows[n]['id']},view=self.skin_view)
+        if self.skin_plan['enabled']:return
+        choice=self.selected_team_option(team)
+        if choice is None:return
+        if choice in ('female','male'):
+            self.skin_plan['gender'][team]=2 if choice=='female' else 1
+            self.skin_plan['random'][team]=True
+            self.skin_rules.pop(team,None)
+            self.skin_pending.pop(team,None)
+            self.commit_skin_plan()
+            return
+        self.skin_selected[team]=choice
+        if self.skin_plan['gender'][team]:
+            self.skin_plan['gender'][team]=0
+            self.skin_plan['random'][team]=False
+            self.commit_skin_plan()
+        if team in self.skin_rules and not self.skin_plan['random'][team]:self.request('bot_skin_rule',team=team,skin=choice,enabled=True,view=self.skin_view)
+        elif team in self.skin_pending:self.request('bot_skin_batch',choices={team:choice},view=self.skin_view)
+        self.schedule_save()
         self.refresh_skin_buttons()
     def apply_bot_skins(self,team,continuous=False):
         if self.skin_plan['enabled']:return False
         if not continuous and team in self.skin_pending:return self.request('bot_skin_batch',choices={team:None},view=self.skin_view)
         if continuous and team in self.skin_rules and not self.skin_plan['random'][team]:return self.request('bot_skin_rule',team=team,enabled=False,view=self.skin_view)
-        n=self.skin_choices[team].current();rows=self.skin_items.get(team,())
-        if not 0<=n<len(rows):return False
-        self.skin_selected[team]=rows[n]['id'];self.schedule_save()
-        if continuous:return self.request('bot_skin_rule',team=team,skin=rows[n]['id'],enabled=True,view=self.skin_view)
-        return self.request('bot_skin_batch',choices={team:rows[n]['id']},view=self.skin_view)
+        choice=self.selected_team_option(team)
+        if type(choice) is not int:return False
+        self.skin_selected[team]=choice;self.schedule_save()
+        if continuous:return self.request('bot_skin_rule',team=team,skin=choice,enabled=True,view=self.skin_view)
+        return self.request('bot_skin_batch',choices={team:choice},view=self.skin_view)
     def skin_combo(self,parent,**kwargs):
         combo=ttk.Combobox(parent,style='Skin.TCombobox',**kwargs)
         popup=combo.tk.call('ttk::combobox::PopdownWindow',str(combo))
@@ -5532,6 +5572,7 @@ class App:
     def refresh_skin_text(self):
         for widget,text in self.skin_texts:
             if widget.winfo_exists():widget.configure(text=self.language.t(text))
+        self.refresh_team_options()
     def skin_quota_team(self):
         return 3 if self.skin_team.get()=='CT' else 2
     def skin_option_list(self,team):
