@@ -22,7 +22,7 @@
 
   </details>
 
-  **2026-11-20:** Added bot skin selection.
+  **2026-11-20:** Added bot skin selection. CT and T can each use random female or male characters. Each bot draws its own skin every round.
 
 - **CSO2 Bot Tool** — Target display, aiming, firing and penetration assistance.
 
@@ -74,7 +74,7 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
   </details>
 
-  **2026-11-20 更新：** 新增 BOT 换皮肤机制。
+  **2026-11-20 更新：** 新增 BOT 换皮肤机制。CT 和 T 的整队下拉框均可选择「全部随机女性角色」或「全部随机男性角色」，每个 BOT 每回合独立抽取。
 
 - **CSO2 Bot Tool · BOT 辅助工具** — 目标显示、瞄准射击与穿透辅助。
 
