@@ -9,7 +9,7 @@
 
   <details>
   <summary>Previous updates</summary>
-  <blockquote>
+  <dl><dd>
 
   **Updated on 2026-10-10:**
 
@@ -19,19 +19,19 @@
   - Chinese/English Heroes controls and messages; the model popup opens centered, and windows can be dragged partly off screen.
   - Restored Heroes controls and weapon spawning when the host needs to enable `sv_cheats` first.
 
-  Validation: the published source matches the build that passed 38 scoped checks. No full CHECK was run; live gameplay still needs confirmation, including special Boss attacks already in progress.
-
-  This refresh keeps **v1.0.0**. If you already have v1.0.0, download `cso2-host-tool.pyw` again; the current updater only offers higher version numbers. The download contains empty personal settings.
-
-  </blockquote>
+  </dd></dl>
   </details>
 
   <details open>
   <summary><strong>2026-11-20:</strong></summary>
-  <blockquote>
+  <dl><dd>
   <p>Added bot skin selection.<br>CT and T can each use random female or male characters. Each bot draws its own skin every round.</p>
-  </blockquote>
+  </dd></dl>
   </details>
+
+  Validation: the published source matches the build that passed 38 scoped checks. No full CHECK was run; live gameplay still needs confirmation, including special Boss attacks already in progress.
+
+  This refresh keeps **v1.0.0**. If you already have v1.0.0, download `cso2-host-tool.pyw` again; the current updater only offers higher version numbers. The download contains empty personal settings.
 
   </dd></dl>
 
@@ -41,21 +41,21 @@
 
   <details>
   <summary>Previous updates</summary>
-  <blockquote>
+  <dl><dd>
 
   **Updated on 2026-11-05:**
 
   - Automatically restores missing or damaged Frida runtime files, with background checks and clear error messages.
   - Fixes the countdown policy's “Apply once” click handling and shows progress, success or failure in the popup.
 
-  </blockquote>
+  </dd></dl>
   </details>
 
   <details open>
   <summary><strong>Updated on 2026-11-15:</strong></summary>
-  <blockquote>
+  <dl><dd>
   <p>Improved aiming speed and compressed logs.<br>The non-host magic bullet feature is for fun only. Do not enable it for serious matches; it is less accurate than auto-aim.</p>
-  </blockquote>
+  </dd></dl>
   </details>
 
   </dd></dl>
@@ -79,7 +79,7 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
   <details>
   <summary>历史更新</summary>
-  <blockquote>
+  <dl><dd>
 
   **2026-10-10 更新：**
 
@@ -89,19 +89,19 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
   - 补齐 HEROES 控件和提示的中英文；模型弹窗打开时居中，窗口可拖到屏幕边缘外隐藏一部分。
   - 修复洛奇按钮不可用，以及需要先开启 `sv_cheats` 时无法刷枪的问题。
 
-  验证：发布源码与通过 38 项专项检查的版本一致。未运行全量 CHECK；游戏实际效果仍待确认，包括特殊 Boss 已开始的攻击动作。
-
-  本次保持 **v1.0.0**。已安装 v1.0.0 的用户请重新下载 `cso2-host-tool.pyw`，当前自动更新只提示更高版本号。下载文件中的个人设置为空。
-
-  </blockquote>
+  </dd></dl>
   </details>
 
   <details open>
   <summary><strong>2026-11-20 更新：</strong></summary>
-  <blockquote>
+  <dl><dd>
   <p>新增 BOT 换皮肤机制。<br>CT 和 T 的整队下拉框均可选择「全部随机女性角色」或「全部随机男性角色」，每个 BOT 每回合独立抽取。</p>
-  </blockquote>
+  </dd></dl>
   </details>
+
+  验证：发布源码与通过 38 项专项检查的版本一致。未运行全量 CHECK；游戏实际效果仍待确认，包括特殊 Boss 已开始的攻击动作。
+
+  本次保持 **v1.0.0**。已安装 v1.0.0 的用户请重新下载 `cso2-host-tool.pyw`，当前自动更新只提示更高版本号。下载文件中的个人设置为空。
 
   </dd></dl>
 
@@ -111,21 +111,21 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
   <details>
   <summary>历史更新</summary>
-  <blockquote>
+  <dl><dd>
 
   **2026-11-05 更新：**
 
   - Frida 依赖文件缺失或损坏时自动恢复，后台持续检查并明确提示错误。
   - 修复倒计时策略“仅处理本次”的点击处理，弹窗显示处理进度及成功或失败结果。
 
-  </blockquote>
+  </dd></dl>
   </details>
 
   <details open>
   <summary><strong>2026-11-15 更新：</strong></summary>
-  <blockquote>
+  <dl><dd>
   <p>改进瞄准速度，对日志进行压缩。<br>非房主魔法子弹功能仅娱乐，如果认真对局请勿启用，准度不如自动瞄准。</p>
-  </blockquote>
+  </dd></dl>
   </details>
 
   </dd></dl>
