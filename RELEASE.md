@@ -5,8 +5,11 @@
 
 - **CSO2 Host Tool** — Player management, match settings and commands.
 
+  <dl><dd>
+
   <details>
   <summary>Previous updates</summary>
+  <blockquote>
 
   **Updated on 2026-10-10:**
 
@@ -20,27 +23,42 @@
 
   This refresh keeps **v1.0.0**. If you already have v1.0.0, download `cso2-host-tool.pyw` again; the current updater only offers higher version numbers. The download contains empty personal settings.
 
+  </blockquote>
   </details>
 
-  > **2026-11-20:**
-  > Added bot skin selection.
-  > CT and T can each use random female or male characters. Each bot draws its own skin every round.
+  <details open>
+  <summary><strong>2026-11-20:</strong></summary>
+  <blockquote>
+  <p>Added bot skin selection.<br>CT and T can each use random female or male characters. Each bot draws its own skin every round.</p>
+  </blockquote>
+  </details>
+
+  </dd></dl>
 
 - **CSO2 Bot Tool** — Target display, aiming, firing and penetration assistance.
 
+  <dl><dd>
+
   <details>
   <summary>Previous updates</summary>
+  <blockquote>
 
   **Updated on 2026-11-05:**
 
   - Automatically restores missing or damaged Frida runtime files, with background checks and clear error messages.
   - Fixes the countdown policy's “Apply once” click handling and shows progress, success or failure in the popup.
 
+  </blockquote>
   </details>
 
-  > **Updated on 2026-11-15:**
-  > Improved aiming speed and compressed logs.
-  > The non-host magic bullet feature is for fun only. Do not enable it for serious matches; it is less accurate than auto-aim.
+  <details open>
+  <summary><strong>Updated on 2026-11-15:</strong></summary>
+  <blockquote>
+  <p>Improved aiming speed and compressed logs.<br>The non-host magic bullet feature is for fun only. Do not enable it for serious matches; it is less accurate than auto-aim.</p>
+  </blockquote>
+  </details>
+
+  </dd></dl>
 
 - **CSO2 Local Master Server** — Local launch, solo play and save management.
 
@@ -57,8 +75,11 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
 - **CSO2 Host Tool · 房主工具** — 玩家管理、对局设置与指令。
 
+  <dl><dd>
+
   <details>
   <summary>历史更新</summary>
+  <blockquote>
 
   **2026-10-10 更新：**
 
@@ -72,27 +93,42 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
   本次保持 **v1.0.0**。已安装 v1.0.0 的用户请重新下载 `cso2-host-tool.pyw`，当前自动更新只提示更高版本号。下载文件中的个人设置为空。
 
+  </blockquote>
   </details>
 
-  > **2026-11-20 更新：**
-  > 新增 BOT 换皮肤机制。
-  > CT 和 T 的整队下拉框均可选择「全部随机女性角色」或「全部随机男性角色」，每个 BOT 每回合独立抽取。
+  <details open>
+  <summary><strong>2026-11-20 更新：</strong></summary>
+  <blockquote>
+  <p>新增 BOT 换皮肤机制。<br>CT 和 T 的整队下拉框均可选择「全部随机女性角色」或「全部随机男性角色」，每个 BOT 每回合独立抽取。</p>
+  </blockquote>
+  </details>
+
+  </dd></dl>
 
 - **CSO2 Bot Tool · BOT 辅助工具** — 目标显示、瞄准射击与穿透辅助。
 
+  <dl><dd>
+
   <details>
   <summary>历史更新</summary>
+  <blockquote>
 
   **2026-11-05 更新：**
 
   - Frida 依赖文件缺失或损坏时自动恢复，后台持续检查并明确提示错误。
   - 修复倒计时策略“仅处理本次”的点击处理，弹窗显示处理进度及成功或失败结果。
 
+  </blockquote>
   </details>
 
-  > **2026-11-15 更新：**
-  > 改进瞄准速度，对日志进行压缩。
-  > 非房主魔法子弹功能仅娱乐，如果认真对局请勿启用，准度不如自动瞄准。
+  <details open>
+  <summary><strong>2026-11-15 更新：</strong></summary>
+  <blockquote>
+  <p>改进瞄准速度，对日志进行压缩。<br>非房主魔法子弹功能仅娱乐，如果认真对局请勿启用，准度不如自动瞄准。</p>
+  </blockquote>
+  </details>
+
+  </dd></dl>
 
 - **CSO2 Local Master Server · 本地主服务端** — 本地启动、单人玩法与存档管理。
 
