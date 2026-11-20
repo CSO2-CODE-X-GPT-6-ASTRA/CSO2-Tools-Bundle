@@ -41,7 +41,7 @@ def main():
     before = api('releases/tags/'+tag)
     old = next(a for a in before['assets'] if a['name'] == 'cso2-bot-tool.7z')
     previous_tag = api('git/ref/tags/'+tag)['object']['sha']
-    notes = (root/'RELEASE.md').read_text('utf8')
+    notes = before['body']
     seven = shutil.which('7z') or shutil.which('7zz')
     if not seven:
         raise RuntimeError('7-Zip is required')
@@ -58,23 +58,32 @@ def main():
                 assert name == manifest['entry'] or path.parts[0] in manifest['directories']
                 data = source.read(name)
                 assert len(data) == expected['size'] and digest(data) == expected['sha256']
-                target = stage.joinpath(*path.parts)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
+                if name == manifest['entry']:
+                    (stage / name).write_bytes(data)
         manual = work/'cso2-bot-tool.7z'
+        # Reuse the published resources; replace only the script. Stored
+        # archives have no timestamps, so update-by-date can retain old code.
+        gh('release', 'download', tag, '--pattern', old['name'], '--dir', work)
+        assert manual.stat().st_size == old['size']
+        assert 'sha256:'+digest(manual.read_bytes()) == old['digest']
+        run(seven, 'd', manual, manifest['entry'], '-bso0', '-bsp0')
         run(seven, 'a', '-t7z', '-mx=5', '-ms=off', '-mmt=2', '-mtm=off', '-mtc=off', '-mta=off',
-            '-bso0', '-bsp0', manual, manifest['entry'], *manifest['directories'], cwd=stage)
+            '-bso0', '-bsp0', manual, manifest['entry'], cwd=stage)
         extracted = work/'verified'
         run(seven, 'x', manual, '-o'+str(extracted), '-y', '-bso0', '-bsp0')
         actual = {p.relative_to(extracted).as_posix(): digest(p.read_bytes())
                   for p in extracted.rglob('*') if p.is_file()}
         assert actual == {n: row['sha256'] for n, row in manifest['files'].items()}
         checksum = digest(manual.read_bytes())
-        staged = work/('cso2-bot-tool.'+os.environ['GITHUB_RUN_ID']+'.7z')
+        staged = work/('cso2-bot-tool.'+os.environ['GITHUB_RUN_ID']+'.'+os.environ.get('GITHUB_RUN_ATTEMPT','1')+'.7z')
         shutil.copyfile(manual, staged)
         gh('release', 'upload', tag, staged)
         uploaded = next(a for a in api('releases/tags/'+tag)['assets'] if a['name'] == staged.name)
         assert uploaded['digest'] == 'sha256:'+checksum and uploaded['size'] == manual.stat().st_size
+        downloaded = work/'downloaded'
+        downloaded.mkdir()
+        gh('release', 'download', tag, '--pattern', staged.name, '--dir', downloaded)
+        assert digest((downloaded/staged.name).read_bytes()) == checksum
         manifest['manual_archive'] = dict(asset=manual.name, size=manual.stat().st_size, sha256=checksum)
         # OS/7-Zip versions can change archive bytes; all extracted files were
         # checked against the approved manifest before publishing its digest.
@@ -92,9 +101,22 @@ def main():
         run('git', 'push', '--atomic', 'origin', commit+':refs/heads/main', commit+':refs/tags/'+tag,
             '--force-with-lease=refs/heads/main:'+os.environ['GITHUB_SHA'],
             '--force-with-lease=refs/tags/'+tag+':'+previous_tag)
-        gh('release', 'edit', tag, '--notes-file', root/'RELEASE.md')
+        # Keep the old attachment recoverable until the verified one owns
+        # the stable download name.
+        previous_name = 'cso2-bot-tool.previous-'+str(old['id'])+'.7z'
+        api('releases/assets/'+str(old['id']), '-X', 'PATCH', '-f', 'name='+previous_name)
+        try:
+            api('releases/assets/'+str(uploaded['id']), '-X', 'PATCH', '-f', 'name='+manual.name)
+            ready = api('releases/tags/'+tag)
+            active = next(a for a in ready['assets'] if a['name'] == manual.name)
+            assert active['id'] == uploaded['id'] and active['digest'] == 'sha256:'+checksum
+        except Exception:
+            current = api('releases/tags/'+tag)
+            if any(a['id'] == uploaded['id'] and a['name'] == manual.name for a in current['assets']):
+                api('releases/assets/'+str(uploaded['id']), '-X', 'PATCH', '-f', 'name='+staged.name)
+            api('releases/assets/'+str(old['id']), '-X', 'PATCH', '-f', 'name='+old['name'])
+            raise
         api('releases/assets/'+str(old['id']), '-X', 'DELETE')
-        api('releases/assets/'+str(uploaded['id']), '-X', 'PATCH', '-f', 'name='+manual.name)
         after = api('releases/tags/'+tag)
         assert after['body'].replace('\r\n', '\n').strip() == notes.strip()
         assets = {a['name']: a for a in after['assets']}
