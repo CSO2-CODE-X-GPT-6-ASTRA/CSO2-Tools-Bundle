@@ -22,9 +22,9 @@
 
   </details>
 
-  **2026-11-20:**
-  Added bot skin selection.
-  CT and T can each use random female or male characters. Each bot draws its own skin every round.
+  > **2026-11-20:**
+  > Added bot skin selection.
+  > CT and T can each use random female or male characters. Each bot draws its own skin every round.
 
 - **CSO2 Bot Tool** — Target display, aiming, firing and penetration assistance.
 
@@ -38,11 +38,9 @@
 
   </details>
 
-  **Updated on 2026-11-15:**
-
-  Improved aiming speed and compressed logs.
-
-  The non-host magic bullet feature is for fun only. Do not enable it for serious matches; it is less accurate than auto-aim.
+  > **Updated on 2026-11-15:**
+  > Improved aiming speed and compressed logs.
+  > The non-host magic bullet feature is for fun only. Do not enable it for serious matches; it is less accurate than auto-aim.
 
 - **CSO2 Local Master Server** — Local launch, solo play and save management.
 
@@ -76,9 +74,9 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
   </details>
 
-  **2026-11-20 更新：**
-  新增 BOT 换皮肤机制。
-  CT 和 T 的整队下拉框均可选择「全部随机女性角色」或「全部随机男性角色」，每个 BOT 每回合独立抽取。
+  > **2026-11-20 更新：**
+  > 新增 BOT 换皮肤机制。
+  > CT 和 T 的整队下拉框均可选择「全部随机女性角色」或「全部随机男性角色」，每个 BOT 每回合独立抽取。
 
 - **CSO2 Bot Tool · BOT 辅助工具** — 目标显示、瞄准射击与穿透辅助。
 
@@ -92,11 +90,9 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
   </details>
 
-  **2026-11-15 更新：**
-
-  改进瞄准速度，对日志进行压缩。
-
-  非房主魔法子弹功能仅娱乐，如果认真对局请勿启用，准度不如自动瞄准。
+  > **2026-11-15 更新：**
+  > 改进瞄准速度，对日志进行压缩。
+  > 非房主魔法子弹功能仅娱乐，如果认真对局请勿启用，准度不如自动瞄准。
 
 - **CSO2 Local Master Server · 本地主服务端** — 本地启动、单人玩法与存档管理。
 
