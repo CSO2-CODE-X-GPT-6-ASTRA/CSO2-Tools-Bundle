@@ -521,6 +521,17 @@ def chat_command(text,team=False):
     if len(text.encode('utf-8'))>CHAT_BYTE_LIMIT:raise ValueError('喊话最多 180 字节（约 60 个汉字）')
     return ('say_team' if team else 'say')+' "'+text+'"'
 
+def command_signature(text):
+    try:
+        return tuple((args[0].casefold(),*args[1:]) for args in console_segments(text))
+    except ValueError:
+        return ()
+
+def requests_spectators(text):
+    return any(args[0]=='spectate' or (args[0]=='jointeam' and len(args)>1 and
+               (re.fullmatch(r'\+?0*1',args[1]) or args[1].casefold()=='spectator'))
+               for args in command_signature(text))
+
 def bot_stop_target(text):
     parts=console_segments(text)
     if len(parts)==1 and len(parts[0])==2 and parts[0][0].casefold()=='bot_stop' and parts[0][1] in ('0','1'):
@@ -3395,7 +3406,7 @@ def listener_player_keys(players,scope):
     local=next((p for p in roster if p.local),None)
     if local is None:return []
     if scope=='self':roster=[local]
-    elif scope=='team':roster=[p for p in roster if p.team==local.team and p.key!=local.key]
+    elif scope=='team':roster=[p for p in roster if p.team==local.team]
     elif scope!='both':return []
     return sorted((p.key for p in roster),key=lambda k:k.index)
 
@@ -3805,6 +3816,9 @@ class Worker(threading.Thread):
             if not self.b.mem or inner.get('epoch')!=self.b.epoch or self.b.current_context()!=self.b.context:
                 raise NotReady('等待有效的新对局')
             action=ticket['action']
+            if action=='command' and requests_spectators(inner['text']) and ticket['listener']!='command:jointeam 1':
+                self.listener_result(ticket,False,'rejected',terminal=True)
+                return
             if action=='command' and self.command_matches(inner['text']):
                 self.listener_result(ticket,True,'matched');return
             if action=='machine_reroll' and inner.get('key') is None:
@@ -4166,6 +4180,7 @@ class Worker(threading.Thread):
                 spawning={'bot_add','bot_add_t','bot_add_ct','bot_quota','mp_restartgame'}
                 if any(part[0].casefold() in spawning for part in console_segments(data['text'])):
                     if not self.bot_skins.prepare_spawn(self.skin_once):raise NotReady('等待 BOT 出生前分配器就绪')
+            if self._listener_ticket and not self.listener_current(self._listener_ticket):return
             self.b.send(data['text']);self.emit('log',text='已交给游戏命令队列：'+data['text']);return
         if action=='chat':
             if self._listener_ticket and not self.listener_current(self._listener_ticket):return
@@ -4404,7 +4419,7 @@ from tkinter import ttk
 
 EN = {
  '仅在对局内发送；定时监听在进房后自动恢复。':'Sends only in matches; the timer resumes after entering a match.',
- '对我自动生效':'Apply to me automatically','对我所有队友自动生效':'Apply to my teammates automatically','对敌方我方自动生效':'Apply to both teams automatically',
+ '对我自动生效':'Apply to me automatically','对我和队友自动生效':'Apply to me and my teammates automatically','对敌方我方自动生效':'Apply to both teams automatically',
  '等待自动应用':'Waiting to apply automatically','已提交，等待处理':'Submitted · processing','未确认，等待下一局':'Unconfirmed · waiting for next round',
  '本人':'Me','队友':'Teammates','双方':'Both teams','监听中':'Listening','锁定血量':'Lock HP','锁定金钱':'Lock money','搜索':'Search','命令 / 变量':'Command / variable',
  '进房后按实际强化表应用所选等级。':'Selected levels will use the match upgrade table.',
@@ -4415,8 +4430,15 @@ EN = {
  '新增条目':'Add message','上移':'Move up','下移':'Move down','删除条目':'Delete message',
  '字符':'chars','字节':'bytes','从上到下发送，空行跳过。':'Sent from top to bottom. Empty rows are skipped.',
  '发送指令':'Send command',
- '新对局仅发送一次':'Once in the next match','每次对局都发送':'Every match','停用功能':'Disabled',
- '新对局仅一次':'Next match only','每局监听中':'Watching every match',
+ '请用“进入观战”设置自动观战。':'Use Enter spectator mode to enable automatic spectating.',
+ '我和队友':'Me and teammates',
+ '等待无敌功能可用':'Waiting for invulnerability support',
+ '等待我方角色入场':'Waiting for my team to spawn',
+ '等待角色入场':'Waiting for players to spawn',
+ '等待无敌状态确认':'Waiting for confirmation',
+ '已确认':'Confirmed',
+ '仅发送一次':'Send once','每次对局都发送':'Every match','停用功能':'Disabled',
+ '指令暂不可用，本次未提交':'Command unavailable. Nothing submitted.','每局监听中':'Watching every match',
  '等待新对局':'Waiting for next match','本局待发送':'Click to send',
  '立即发送':'Send now','监听中，等待进入游戏':'Listening · waiting for game',
  '关闭中，等待处理':'Stopping · awaiting completion',
@@ -5223,7 +5245,7 @@ LISTENER_ACTION_FEATURES={'cheats':'cheats','ammo':'ammo','buy':'buy','scale':'s
 LISTENER_CONTINUOUS={'chat_timer','heroes_auto','heroes_no_wait','heroes_temple','heroes_custom_damage','heroes_no_attack'}
 ROLE_NAMES={'gign': {'zh': '皮埃尔', 'en': 'GIGN'}, 'sas': {'zh': '瑞恩', 'en': 'SAS'}, 'sas01': {'zh': '经典 瑞恩', 'en': 'SAS (OLD)'}, 'sas02': {'zh': '反恐将领 瑞恩', 'en': 'SAS (LE)'}, 'lisa': {'zh': '莉莎', 'en': 'Lisa'}, 'lisa01': {'zh': '莉莎(运动装)', 'en': 'Lisa (LE)'}, 'lisa02swim': {'zh': '泳池派对 莉莎', 'en': 'Lisa (SWIM)'}, 'lisa03xmas': {'zh': '胡桃夹子 莉莎', 'en': 'Lisa (XMAS)'}, 'michael': {'zh': '迈克', 'en': 'Michael'}, '707': {'zh': '707', 'en': '707'}, 'kenji': {'zh': '健治', 'en': 'Kenji'}, 'mari': {'zh': '玛丽', 'en': 'Marie'}, 'mari01': {'zh': '兔女郎玛丽', 'en': 'Marie (LE)'}, 'emma': {'zh': '艾玛', 'en': 'Emma'}, 'emma02swim': {'zh': '泳池派对 艾玛', 'en': 'Emma (SWIM)'}, 'lincoln': {'zh': '林肯', 'en': 'Lincoln'}, 'GSG': {'zh': '卢卡斯', 'en': 'GSG-09'}, 'carrie': {'zh': '凯利', 'en': 'Carrie'}, 'carrie01': {'zh': '壮志凌云 凯利', 'en': 'Carrie (LE)'}, 'choi': {'zh': '崔智云', 'en': 'Choi Ji Yoon'}, 'choi01': {'zh': '军装 崔智云', 'en': 'Choi Ji Yoon (LE)'}, 'choi02': {'zh': '女伯爵 崔智云', 'en': 'Choi Ji Yoon (S-PUNK)'}, 'helga': {'zh': '莉莉娅', 'en': 'Helga'}, 'helga01xmas': {'zh': '冰雪女王 莉莉娅', 'en': 'Helga (XMAS)'}, 'heather': {'zh': '海瑟尔', 'en': 'Heather'}, 'kwan': {'zh': '阿宽', 'en': 'Kwan'}, 'miu': {'zh': '奈奈', 'en': 'Miu'}, 'miu01': {'zh': '同级生 奈奈', 'en': 'Miu (LE)'}, 'ct_miya': {'zh': '米雅 蓝队'}, 'ct_2b': {'zh': '尤尔哈 2B'}, 'ct_marie rose': {'zh': '玛丽·萝丝'}, 'ct_st6': {'zh': '全球攻势 海豹六队'}, 'ct_miku': {'zh': '初音未來'}, 'ct_chushuang': {'zh': '初霜'}, 'ct_leimu': {'zh': '蕾姆'}, 'ct_ysbbl': {'zh': '芭芭拉'}, 'ct_keqing': {'zh': '刻晴'}, 'ct_tianyi01': {'zh': '旗袍 洛天依'}, 'ct_touhou': {'zh': '铃仙·优昙华院·因幡'}, 'ct_tifa': {'zh': '蒂法·洛克哈特'}, 'tr_raidenshogun': {'zh': '雷电将军'}, 'tr_raiden': {'zh': '雷电'}, 'tr_ghost': {'zh': '幽灵·莱利'}, 'ct_cc': {'zh': 'C·C·'}, 'ct_lelouch': {'zh': '鲁路修·兰佩路基'}, 'tr_huaji': {'zh': '滑稽人'}, 'ct_jcms': {'zh': '骇兔·旧城迷事'}, 'ct_MZBY': {'zh': '木之本樱'}, 'ct_ysbblskin': {'zh': '芭芭拉·闪耀协奏'}, 'ct_UMP45': {'zh': '少女前线·UMP45'}, 'ct_ump9': {'zh': '少女前线·UMP9'}, 'ct_slqn': {'zh': '神乐七奈'}, 'tr_smn1': {'zh': '醒目飞鹰'}, 'tr_syz': {'zh': '噶呜古拉·休闲服'}, 'tr_jiaran': {'zh': '嘉然'}, 'ct_gula': {'zh': '噶呜古拉'}, 'ct_gulaYz': {'zh': '噶呜古拉·泳装'}, 'ct_Shimakaze': {'zh': '島風'}, 'tr_amelia': {'zh': '阿米莉亚·华生'}, 'ct_nekoha': {'zh': '猫羽雫'}, 'ct_SAOTR': {'zh': '桐谷和人'}, 'ct_ejtct': {'zh': '二阶堂咲'}, 'ct_jiegeng': {'zh': '桔梗'}, 'ct_slbz': {'zh': '砂狼白子'}, 'ct_syact': {'zh': '水野爱'}, 'ct_lmly': {'zh': '蕾米莉亚·斯卡蕾特'}, 'ct_LingMeng2': {'zh': '花骑士·百可花'}, 'ct_toki': {'zh': '角楯花凛·兔女郎'}, 'ct_miyako': {'zh': '月雪都子·水着'}, 'ct_iori': {'zh': '银镜伊织'}, 'ct_iroha': {'zh': '枣·伊吕波'}, 'ct_xiaochun': {'zh': '下江小春'}, 'ct_Laoda': {'zh': '牢大'}, 'ct_hibiki': {'zh': '响'}, 'ct_molisa': {'zh': '花骑士·魔里沙'}, 'ct_rabbitholemiku': {'zh': '兔子洞·初音'}, 'ct_bh3qynyz': {'zh': '琪亚娜·月海流华'}, 'ct_sdj_lingyi': {'zh': '闪刀姬-零衣'}, 'ct_shiwu': {'zh': '凯萨·十五根号三'}, 'ct_arisu': {'zh': '天童爱丽丝'}, 'ct_maki': {'zh': '小涂真纪·野营'}, 'ct_yoshino': {'zh': '冰芽川四糸乃'}, 'ct_chise': {'zh': '和乐千世·水着'}, 'ct_kokona': {'zh': '春原心奈'}, 'ct_arona': {'zh': '阿罗娜'}, 'ct_midori': {'zh': '才羽绿'}, 'ct_furina': {'zh': '芙宁娜'}, 'ct_lingsha': {'zh': '灵砂'}, 'ct_machikane': {'zh': '诗歌剧'}, 'ct_mashu': {'zh': '麻薯'}, 'ct_nokotan': {'zh': '鹿乃子乃子'}, 'ct_lcscavenger': {'zh': '致命公司员工'}, 'ct_hsrfirefly': {'zh': '流萤'}, 'ct_hsrsilverwolf': {'zh': '银狼'}, 'ct_padoru': {'zh': '圣诞尼禄'}, 'ct_dalkotorinew': {'zh': '五河琴里'}, 'ct_acetaffy': {'zh': '永雏塔菲'}, 'arctic': {'zh': '埃尔伯', 'en': 'Arctic'}, 'leet': {'zh': '里特', 'en': 'Leet'}, 'leet01': {'zh': '经典 里特', 'en': 'Leet (OLD)'}, 'arctic01': {'zh': '北非谍影 埃尔伯', 'en': 'Arctic (LE)'}, 'mila': {'zh': '米拉', 'en': 'Mila'}, 'mila01': {'zh': '米拉(迷彩装)', 'en': 'Mila (LE)'}, 'mila02swim': {'zh': '泳池派对 米拉', 'en': 'Mila (SWIM)'}, 'mila03xmas': {'zh': '胡桃夹子 米拉', 'en': 'Mila (XMAS)'}, 'karachenko': {'zh': '舍甫琴科', 'en': 'Karachenko'}, 'ara': {'zh': '风荒', 'en': 'Ara'}, 'joe': {'zh': '乔', 'en': 'Joe'}, 'natary': {'zh': '娜塔莉', 'en': 'Natalie'}, 'natary01': {'zh': '圣诞装娜塔莉', 'en': 'Natalie (LE)'}, 'tammy': {'zh': '塔米', 'en': 'Tammy'}, 'tammy02swim': {'zh': '泳池派对 塔米', 'en': 'Tammy (SWIM)'}, 'mao': {'zh': '格伦', 'en': 'Mao'}, 'phoenix': {'zh': '尼古拉斯', 'en': 'Phoenix'}, 'viper': {'zh': '善柔', 'en': 'Viper'}, 'viper01': {'zh': '沙漠蝰蛇 善柔', 'en': 'Viper (LE)'}, 'yuri': {'zh': '安娜', 'en': 'Yuri'}, 'yuri01': {'zh': '公主裙 安娜', 'en': 'Yuri (LE)'}, 'yuri02': {'zh': '探险家 安娜', 'en': 'Yuri (S-PUNK)'}, 'white': {'zh': '维卡', 'en': 'Naomi'}, 'white01xmas': {'zh': '冰原猎手 维卡', 'en': 'Naomi (XMAS)'}, 'sonya': {'zh': '索娜', 'en': 'Sonya'}, 'hasan': {'zh': '哈桑', 'en': 'Hasan'}, 'athena': {'zh': '雅典娜', 'en': 'Athena'}, 'athena01': {'zh': '转校生 雅典娜', 'en': 'Athena (LE)'}, 'mofa': {'zh': '魔法少女奈奈'}, 'tr_miya': {'zh': '米雅 红队'}, 'tr_new_leet': {'zh': '全球攻势 里特'}, 'tr_qipao': {'zh': '上管燕'}, 'tr_haku': {'zh': '兔女郎弱音ハク'}, 'tr_san': {'zh': '桑'}, 'tr_ysht': {'zh': '胡桃'}, 'tr_klee': {'zh': '可莉'}, 'tr_fanzhou': {'zh': '反转折纸'}, 'tr_tina': {'zh': '缇娜 精英队员'}, 'tr_shiro': {'zh': '西萝'}, 'tr_cxk': {'zh': '坤坤'}, 'tr_kokoro': {'zh': '天宮心'}, 'tr_djysn': {'zh': '亚丝娜'}, 'tr_alice': {'zh': '爱丽丝·滋贝鲁库'}, 'ct_yslh': {'zh': '神里绫华'}, 'ct_KL': {'zh': '百地希留耶·凯露'}, 'ct_chocola': {'zh': '貓娘樂園·巧克力'}, 'ct_smnct': {'zh': '目白麦昆'}, 'tr_vanilla': {'zh': '貓娘樂園·香子兰'}, 'tr_symx': {'zh': '圣园弥香'}, 'ct_jsnct': {'zh': '源樱'}, 'tr_Aqua': {'zh': '凑阿库娅'}, 'tr_beidao': {'zh': '北条沙都子'}, 'tr_jsntr': {'zh': '绀野纯子'}, 'tr_ludao': {'zh': '鹿岛'}, 'tr_dfqln': {'zh': '琪露諾'}, 'tr_GameBai': {'zh': '白'}, 'tr_Hayase': {'zh': '早濑优香'}, 'tr_xiana': {'zh': '夏娜'}, 'tr_xxxem': {'zh': '小惡魔'}, 'tr_fldl': {'zh': '芙兰朵露·斯卡蕾特'}, 'tr_xzhys': {'zh': '星之海·弱音'}, 'tr_LingMeng': {'zh': '花骑士·幼灵梦'}, 'tr_asuna': {'zh': '一之瀬明日奈·兔女郎'}, 'tr_karin': {'zh': '飞鸟马时·兔女郎'}, 'tr_hanako': {'zh': '浦和花子·水着'}, 'tr_bzx': {'zh': '白洲梓'}, 'tr_Hifumi': {'zh': '阿慈谷日步美'}, 'tr_hina': {'zh': '空崎阳奈'}, 'tr_yamakaze': {'zh': '山風'}, 'tr_kizunaai': {'zh': '绊爱'}, 'tr_kotori': {'zh': '五河琴里·灵装'}, 'tr_zoey': {'zh': '闪刀姬-露世'}, 'tr_momoi': {'zh': '才羽桃井'}, 'tr_iochi_mari': {'zh': '伊落玛丽·体操服'}, 'tr_hanaokayuzu': {'zh': '花冈柚子'}, 'tr_hoshino_swim': {'zh': '小鸟游星野·水着'}, 'tr_plana': {'zh': '普拉娜'}, 'tr_kisaki': {'zh': '龙华妃咲'}, 'tr_BH3alxyyz': {'zh': '爱莉希雅·夏日妖精'}, 'tr_manhattan_cafe': {'zh': '曼城茶座'}, 'tr_nahida': {'zh': '纳西妲'}, 'tr_rusk': {'zh': 'Rusk-小蓝'}, 'tr_yae_miko': {'zh': '八重神子'}, 'tr_hsrsparkle': {'zh': '花火'}, 'tr_nikkedorothy': {'zh': '桃乐丝'}, 'tr_cc_vrchat': {'zh': 'C·C·飞行装'}}
 ZETA_SKILLS=[{'id': 2, 'code': 'zz_vaccine_smoke', 'zh': '疫苗弹', 'en': 'Vaccine Smoke', 'phase': 3, 'rva': '0x290110'}, {'id': 3, 'code': 'zz_initial_money_support', 'zh': '财迷', 'en': 'Moneyworm', 'phase': 3, 'rva': '0x2904e0'}, {'id': 4, 'code': 'zz_not_have_primary_fortify_melee', 'zh': '格斗大师', 'en': 'Melee Powerup', 'phase': 3, 'rva': '0x290890'}, {'id': 5, 'code': 'zz_increase_bullet', 'zh': '弹药繁殖', 'en': 'Increased Ammo', 'phase': 3, 'rva': '0x290c20'}, {'id': 6, 'code': 'zz_no_reload', 'zh': '快速装填', 'en': 'Fast Reloading', 'phase': 3, 'rva': '0x291120'}, {'id': 7, 'code': 'zz_give_hegrenade', 'zh': '再生手榴弹', 'en': 'HE Grenade', 'phase': 3, 'rva': '0x28cdb0'}, {'id': 8, 'code': 'zz_speed_up_after_grenade', 'zh': '精锐掷弹手', 'en': 'Speed up after Grenading', 'phase': 3, 'rva': '0x2914f0'}, {'id': 9, 'code': 'zz_fire_circle', 'zh': '环形力场', 'en': 'Fire Circle', 'phase': 0, 'rva': '0x295520'}, {'id': 10, 'code': 'zz_explosion_radius', 'zh': '狂暴弹', 'en': 'Extra Explosion Radius', 'phase': 3, 'rva': '0x2917d0'}, {'id': 12, 'code': 'zz_reload_invisible', 'zh': '透明装填', 'en': 'Stealth Reloading', 'phase': 3, 'rva': '0x294d60'}, {'id': 13, 'code': 'zz_fortify_hegrenade', 'zh': '榴弹打击', 'en': 'Nuclear Bomb', 'phase': 3, 'rva': '0x28d260'}, {'id': 14, 'code': 'zz_critical_hit', 'zh': '致命一击', 'en': 'Critical Hit', 'phase': 3, 'rva': '0x291f10'}, {'id': 17, 'code': 'zz_transform_hide_prop', 'zh': '物体变身', 'en': 'Turning into Prop', 'phase': 0, 'rva': '0x294530'}, {'id': 18, 'code': 'zz_fortify_attack', 'zh': '钢铁子弹', 'en': 'Increased Damage', 'phase': 3, 'rva': '0x28ca90'}, {'id': 19, 'code': 'zz_multiply_speed', 'zh': '猎豹', 'en': 'Increased Speed', 'phase': 0, 'rva': '0x28d060'}, {'id': 20, 'code': 'zz_fortify_jump_height', 'zh': '袋鼠', 'en': 'Increased Jump', 'phase': 3, 'rva': '0x28c7c0'}, {'id': 21, 'code': 'zz_not_attacked_recover_hp', 'zh': '生命恢复', 'en': 'HP Regeneration', 'phase': 0, 'rva': '0x28d520'}, {'id': 24, 'code': 'zz_small_body', 'zh': '小型化', 'en': 'Miniaturization', 'phase': 3, 'rva': '0x28dfa0'}, {'id': 25, 'code': 'zz_fill_bullet_while_shooting', 'zh': '生产', 'en': 'Extra Reloading Bullets', 'phase': 3, 'rva': '0x292690'}, {'id': 26, 'code': 'zz_focus_zombie_target', 'zh': '感知', 'en': 'Zombie Marking', 'phase': 3, 'rva': '0x292d50'}, {'id': 27, 'code': 'zz_focus_human_target', 'zh': '狩猎', 'en': 'Human Marking', 'phase': 2, 'rva': '0x293240'}, {'id': 28, 'code': 'zz_air_jump', 'zh': '2段跳', 'en': 'Double Jump', 'phase': 2, 'rva': '0x28c500'}, {'id': 29, 'code': 'zz_multiple_hegrenade', 'zh': '连发弹', 'en': 'Extra Grenading', 'phase': 3, 'rva': '0x293f30'}, {'id': 30, 'code': 'zz_bullet_explosion', 'zh': '爆炸子弹', 'en': 'Explosive Bullets', 'phase': 3, 'rva': '0x295e00'}, {'id': 31, 'code': 'zz_summon_zombie_dog', 'zh': '生产僵尸犬', 'en': 'Zombie Dog Summoner', 'phase': 2, 'rva': '0x2939f0'}, {'id': 32, 'code': 'zz_ignore_knockback', 'zh': '坚挺', 'en': 'Knockback Resistance', 'phase': 2, 'rva': '0x296ab0'}, {'id': 33, 'code': 'zz_friend_attacked_recover_hp', 'zh': '吸收病毒', 'en': 'One Flesh', 'phase': 2, 'rva': '0x294240'}, {'id': 34, 'code': 'zz_fortify_health', 'zh': '生命增加', 'en': 'Increased Health', 'phase': 0, 'rva': '0x291a90'}, {'id': 35, 'code': 'zz_infect_recover_hp', 'zh': '吸血鬼', 'en': 'HP from Infection', 'phase': 2, 'rva': '0x28fcd0'}, {'id': 36, 'code': 'zz_touch_infect', 'zh': '触碰感染', 'en': 'Contact Infection', 'phase': 2, 'rva': '0x291d20'}, {'id': 37, 'code': 'zz_melee_explosion', 'zh': '范围感染', 'en': 'Chain Infection', 'phase': 2, 'rva': '0x296100'}, {'id': 38, 'code': 'zz_throw_zombie_projectile', 'zh': '生化炸弹', 'en': 'Biomedical bomb', 'phase': 2, 'rva': '0x296880'}, {'id': 39, 'code': 'zz_attacked_smoke', 'zh': '臭鼬', 'en': 'Skunk', 'phase': 2, 'rva': '0x2936e0'}, {'id': 40, 'code': 'zz_fortify_armor', 'zh': '钢铁盔甲', 'en': 'Steel Armor', 'phase': 2, 'rva': '0x292950'}, {'id': 42, 'code': 'zz_sniper_laser', 'zh': '镭射激光', 'en': 'Sniper Laser', 'phase': 3, 'rva': '0x2971f0'}, {'id': 43, 'code': 'zz_sniper_zero_spread', 'zh': '神射手', 'en': 'Accurate Sniper', 'phase': 3, 'rva': '0x297b50'}, {'id': 44, 'code': 'zz_sniper_ignite', 'zh': '燃烧子弹', 'en': 'Igniting Sniper', 'phase': 3, 'rva': '0x297e10'}, {'id': 45, 'code': 'zz_big_body', 'zh': '猛犸象', 'en': 'Rhino', 'phase': 2, 'rva': '0x298110'}, {'id': 46, 'code': 'zz_speed_up_ducking', 'zh': '鸭子步', 'en': 'Speed up Ducking', 'phase': 2, 'rva': '0x2985c0'}, {'id': 47, 'code': 'zz_frozen_landing', 'zh': '冷气释放', 'en': 'Frozen Landing', 'phase': 3, 'rva': '0x298800'}, {'id': 48, 'code': 'zz_change_shot', 'zh': '切换射击', 'en': 'Switch Shot', 'phase': 3, 'rva': '0x298f30'}, {'id': 49, 'code': 'zz_zombie_helmet', 'zh': '铁头功', 'en': 'Steel Helmet', 'phase': 2, 'rva': '0x299380'}, {'id': 50, 'code': 'zz_respawn', 'zh': '他们回来了', 'en': 'Respawn', 'phase': 2, 'rva': '0x299660'}, {'id': 51, 'code': 'zz_chain_lightning', 'zh': '连锁闪电', 'en': 'Chain Lightning', 'phase': 3, 'rva': '0x299830'}, {'id': 53, 'code': 'zz_predict_zombie', 'zh': '第六感', 'en': 'Sixth Sense', 'phase': 3, 'rva': '0x29af40'}, {'id': 54, 'code': 'zz_transform_max_zombie', 'zh': '觉醒：汉克', 'en': 'Awakening: Heavy Zombie', 'phase': 2, 'rva': '0x29b1e0'}, {'id': 55, 'code': 'zz_transform_light_zombie', 'zh': '觉醒：崔茜', 'en': 'Awakening: Light Zombie', 'phase': 2, 'rva': '0x29bce0'}, {'id': 56, 'code': 'zz_get_exp', 'zh': '无限变异', 'en': 'Infinite Mutation', 'phase': 0, 'rva': '0x29c620'}, {'id': 57, 'code': 'zz_always_buy', 'zh': '口袋商店', 'en': 'Pocket Store', 'phase': 3, 'rva': '0x29c830'}, {'id': 58, 'code': 'zz_improve_penetration', 'zh': '贯通弹', 'en': 'Bullet Penetration', 'phase': 3, 'rva': '0x29c9f0'}, {'id': 61, 'code': 'zz_kennedy', 'zh': '王牌特工', 'en': 'Pistols Enhancement', 'phase': 3, 'rva': '0x29d670'}, {'id': 64, 'code': 'zz_icarus', 'zh': '伊卡洛斯', 'en': 'Wings', 'phase': 0, 'rva': '0x29de30'}, {'id': 62, 'code': 'zz_anatomist', 'zh': '屠杀本能', 'en': 'Anatomist', 'phase': 3, 'rva': '0x29ea70'}, {'id': 65, 'code': 'zz_ballantines', 'zh': '干扰装置', 'en': 'Generator', 'phase': 3, 'rva': '0x29d300'}, {'id': 63, 'code': 'zz_redfield', 'zh': '生存意志', 'en': 'Personal Shield', 'phase': 3, 'rva': '0x29f980'}, {'id': 66, 'code': 'zz_fire_salamander', 'zh': '烛龙之怒', 'en': 'Fire Salamander', 'phase': 3, 'rva': '0x2a0ae0'}, {'id': 23, 'code': 'zz_antiair', 'zh': '炮弹拦截', 'en': 'Bomb Interception', 'phase': 2, 'rva': '0x2a1270'}, {'id': 52, 'code': 'zz_rapidmutation', 'zh': '不稳定变异', 'en': 'Unstable Mutation', 'phase': 0, 'rva': '0x29abd0'}, {'id': 82, 'code': 'zz_assault', 'zh': '加速突击', 'en': 'Rusher', 'phase': 3, 'rva': '0x2a2970'}, {'id': 83, 'code': 'zz_constructor', 'zh': '建筑师', 'en': 'Constructor', 'phase': 3, 'rva': '0x28ebb0'}, {'id': 77, 'code': 'zz_dominance', 'zh': '尸王传承', 'en': 'Robust Genes', 'phase': 0, 'rva': '0x28e2b0'}, {'id': 78, 'code': 'zz_dash', 'zh': '瞬步', 'en': 'Instant Acceleration', 'phase': 2, 'rva': '0x28e450'}, {'id': 79, 'code': 'zz_blackhole', 'zh': '黑洞', 'en': 'Black Hole', 'phase': 2, 'rva': '0x28e7e0'}, {'id': 85, 'code': 'zz_stickypool', 'zh': '熔炎沼泽', 'en': 'Sticky Pool', 'phase': 3, 'rva': '0x2a3b10'}, {'id': 86, 'code': 'zz_overcharge', 'zh': '过载', 'en': 'Overcharge', 'phase': 3, 'rva': '0x28edb0'}, {'id': 89, 'code': 'zz_phoenix', 'zh': '火翎', 'en': 'Phoenix', 'phase': 3, 'rva': '0x2a51d0'}, {'id': 90, 'code': 'zz_execution', 'zh': '罪恶终结', 'en': 'Executioner', 'phase': 3, 'rva': '0x2a5830'}, {'id': 92, 'code': 'zz_heatup', 'zh': '蒸汽暴走', 'en': 'Heat-up', 'phase': 3, 'rva': '0x2a6400'}, {'id': 93, 'code': 'zz_energyball', 'zh': '能量弹珠', 'en': 'Energy Ball', 'phase': 3, 'rva': '0x2a4090'}]
-PLAYER_SCOPES={'selected':'按勾选玩家','self':'对我自动生效','team':'对我所有队友自动生效','both':'对敌方我方自动生效'}
+PLAYER_SCOPES={'selected':'按勾选玩家','self':'对我自动生效','team':'对我和队友自动生效','both':'对敌方我方自动生效'}
 ROUND_FEATURE_KEYS = ('cheats','ammo','buy','scale')
 ROUND_COMMAND_GROUPS = {
     'bot_stop 1':'bot_stop', 'bot_stop 0':'bot_stop', 'jointeam 1':'jointeam',
@@ -5258,6 +5280,7 @@ class App:
         self.player_scopes=self.read_player_scopes(self.settings)
         self.scope_entries={}
         self.round_buttons={}
+        self.default_round_tokens=[]
         self.round_enabled=set()
         self.round_once=set()
         self.round_skip={};self.round_barriers={};self.round_session=None;self.round_scope=None
@@ -5628,8 +5651,21 @@ class App:
     def refresh_invulnerability_ui(self):
         self.invulnerable_button.state(['!disabled']);self.invulnerable_arrow.state(['!disabled'])
         if self.player_scopes['invulnerable']!='selected':
-            self.set_listener_caption(self.invulnerable_button,self.language.t('无敌模式')+'\n'+self.language.t('运行中' if self.ready else '监听中，等待进入游戏'),'Running.TButton')
-            self.invulnerable_note.configure(text=self.language.t(PLAYER_SCOPES[self.player_scopes['invulnerable']]),fg=TEXT);return
+            scope=self.player_scopes['invulnerable']
+            rows=list(self.players.values())
+            desired=set(listener_player_keys((p for p in rows if not is_tv_player(p)),scope))
+            live=[p for p in rows if p.key in desired and p.alive]
+            confirmed=sum(p.key in self.invulnerable_targets and p.damage_mode==0 for p in live)
+            state='监听中，等待进入游戏'
+            if self.ready:
+                if not self.capabilities.get('invulnerable',{}).get('available'):state='等待无敌功能可用'
+                elif not live:state='等待我方角色入场' if scope!='both' else '等待角色入场'
+                elif confirmed==len(live) and self.vars['invulnerable'].get():state='运行中'
+                else:state='等待无敌状态确认'
+            self.set_listener_caption(self.invulnerable_button,self.language.t('无敌模式')+'\n'+self.language.t(state),'Running.TButton')
+            note=self.language.t(PLAYER_SCOPES[scope])
+            if self.ready and live:note+=f' · {self.language.t("已确认")} {confirmed}/{len(live)}'
+            self.invulnerable_note.configure(text=note,fg=GREEN if state=='运行中' else TEXT);return
         self.set_listener_caption(self.invulnerable_button,self.language.t('无敌模式'),'TButton')
         remembered=self.invulnerable_targets;confirmed=0
         if not remembered:
@@ -5744,12 +5780,7 @@ class App:
     def setting_targets(self,field=None):
         scope=self.player_scopes.get(field,'selected')
         if scope!='selected':
-            roster=[p for p in self.players.values() if p.team in (2,3)]
-            me=next((p for p in roster if p.local),None)
-            if me is None:return []
-            if scope=='self':roster=[me]
-            elif scope=='team':roster=[p for p in roster if p.team==me.team and p.key!=me.key]
-            return sorted((p.key for p in roster),key=lambda k:k.index)
+            return listener_player_keys(self.players.values(),scope)
         valid={player.key for player in self.players.values()}
         self.checked.intersection_update(valid)
         if not self.checked:
@@ -6023,7 +6054,7 @@ class App:
             active=self.player_scopes[field]!='selected'
             title=self.language.t('设置血量' if field=='hp' else '设置金钱')
             if active:
-                scope_title={'self':'本人','team':'队友','both':'双方'}[self.player_scopes[field]]
+                scope_title={'self':'本人','team':'我和队友','both':'双方'}[self.player_scopes[field]]
                 title+='\n'+self.language.t(scope_title)+' · '+self.language.t('运行中' if self.ready else '监听中')
             state=(title,active,self.language.lang)
             if getattr(button,'_scope_view',None)!=state:
@@ -6044,6 +6075,10 @@ class App:
         # Snapshot command values, so editing a delayed command invalidates its old ticket.
         for token in tuple(self.round_enabled):
             if token not in self.round_buttons:continue
+            if self.round_owner(token)!=token:
+                self.drop_round_watch(token)
+                self.schedule_save()
+                continue
             command=self.round_buttons[token][3]().strip()
             try:command_bytes(command)
             except ValueError:
@@ -6085,7 +6120,7 @@ class App:
                 stamp=(self.epoch,self.round_view,tuple((k,roster[k].alive) for k in keys),self.runtime_revision)
             elif mode=='maintain':
                 stamp=(self.epoch,self.runtime_revision)
-            if job['pending'] and job['pending'][1]!=stamp:
+            if mode!='once' and job['pending'] and job['pending'][1]!=stamp:
                 job['pending']=None
             self.listeners.dispatch(key,stamp,payload,lambda ticket:(self.publish_listener_versions() or self.worker.submit('listener_execute',ticket=ticket)))
     def click_wait_control(self,widget):
@@ -6937,26 +6972,69 @@ class App:
                 style.map(name,foreground=[('active','#ffffff')],background=[('active',hover)])
             self._watch_arrow_styles=True
         self.round_buttons[token]=(button,arrow,title,get_command)
+        if token not in ('@manual','@catalog') and not any(str(item[2])==token for item in self.custom):
+            self.default_round_tokens.append(token)
         return frame
+    def round_defaults(self):
+        return {command_signature(self.round_buttons[t][3]()):t for t in self.default_round_tokens}
+    def round_owner(self,token,defaults=None):
+        if token in ('@manual','@catalog') or token in self.default_round_tokens or token not in self.round_buttons:return token
+        signature=command_signature(self.round_buttons[token][3]())
+        if not signature:return token
+        return (self.round_defaults() if defaults is None else defaults).get(signature,token)
+    def drop_round_watch(self,token):
+        self.round_barriers.pop(token,None);self.round_skip.pop(token,None)
+        self.round_enabled.discard(token);self.round_once.discard(token);self.round_sent.discard(token)
+        self.cancel_listener('command:'+token)
+    def round_text_changed(self,token):
+        if token in self.round_enabled:self.drop_round_watch(token)
+        self.refresh_round_buttons();self.schedule_save()
     def round_button_menu(self,token):
         button,arrow,title,get_command=self.round_buttons[token]
         menu=tk.Menu(self.root,tearoff=False,bg='#202e3c',fg='#f5f8fb',activebackground='#246452',
                      activeforeground='white',font=('Microsoft YaHei UI',11),borderwidth=1)
-        selected='off' if token not in self.round_enabled else 'once' if token in self.round_once else 'every'
-        for mode,title in (('once','新对局仅发送一次'),('every','每次对局都发送'),('off','停用功能')):
+        owner=self.round_owner(token)
+        selected='off' if owner not in self.round_enabled else 'once' if owner in self.round_once else 'every'
+        for mode,title in (('once','仅发送一次'),('every','每次对局都发送'),('off','停用功能')):
             mark='  ✓' if mode==selected else ''
-            menu.add_command(label=self.language.t(title)+mark,command=lambda m=mode:self.set_round_watch(token,m!='off',m))
+            menu.add_command(label=self.language.t(title)+mark,command=lambda m=mode:self.choose_round_mode(token,m))
         menu.bind('<Unmap>',lambda _:menu.after_idle(menu.destroy))
         try:menu.tk_popup(arrow.winfo_rootx(),arrow.winfo_rooty()+arrow.winfo_height())
         finally:
             if menu.winfo_exists():menu.grab_release()
+    def choose_round_mode(self,token,mode):
+        if mode != 'once' or not self.ready:
+            return self.set_round_watch(token, mode != 'off', mode)
+        token = self.round_owner(token)
+        job = self.listeners.jobs.get('command:' + token)
+        if job and job['pending'] is not None:
+            # Finish the in-flight request once, including when switching from Every match.
+            action, data, _, _ = job['spec']
+            job['spec'] = (action, data, 'once', None)
+            self.round_once.add(token)
+            self.round_skip.pop(token, None)
+            self.round_barriers.pop(token, None)
+            self.refresh_round_buttons()
+            self.schedule_save()
+            return True
+        if token in self.round_enabled:
+            self.set_round_watch(token, False)
+        return self.send_round_once(token)
     def click_round_button(self,token):
+        token=self.round_owner(token)
         if token in self.round_enabled:return self.set_round_watch(token,False)
         if not self.ready:return self.set_round_watch(token,True,'once')
         return self.send_round_once(token)
     def send_round_once(self,token):
         command=self.round_buttons[token][3]().strip()
-        if not self.ready or not self.command_states.get(command,{}).get('available',False):return False
+        if not self.ready:
+            return False
+        status = self.command_states.get(command)
+        if status is not None and not status.get('available', False):
+            self.log('指令暂不可用，本次未提交', True)
+            return False
+        # A freshly edited command may have no UI sample yet. The manual
+        # request performs its normal validation when the worker handles it.
         if self.send_command(command):
             if token in self.round_once:self.set_round_watch(token,False)
             elif token in self.round_enabled:self.round_sent.add(token)
@@ -6977,10 +7055,13 @@ class App:
                 self.round_barriers.pop(token,None)
             self.schedule_save()
     def set_round_watch(self,token,enabled,mode='every',restoring=False):
+        token=self.round_owner(token)
         if enabled:
             text=self.round_buttons[token][3]().strip()
             try:command_bytes(text)
             except ValueError as exc:self.log(str(exc),True);return False
+            if token!='jointeam 1' and requests_spectators(text):
+                self.log('请用“进入观战”设置自动观战。',True);return False
             group=ROUND_COMMAND_GROUPS.get(text,text.split(maxsplit=1)[0])
             for other in tuple(self.round_enabled):
                 previous=self.round_buttons[other][3]().strip()
@@ -7011,7 +7092,9 @@ class App:
         self.refresh_round_buttons();self.schedule_save()
         return True
     def refresh_round_buttons(self,force=False):
-        for token,(button,arrow,title,_) in self.round_buttons.items():
+        defaults=self.round_defaults()
+        for display,(button,arrow,title,_) in self.round_buttons.items():
+            token=self.round_owner(display,defaults)
             active=token in self.round_enabled;job=self.listeners.jobs.get('command:'+token)
             note='监听中，等待进入游戏'
             if active and self.ready:
@@ -7020,8 +7103,8 @@ class App:
                 if (token in self.round_skip and self.round_skip[token]==self.round_view) or (barrier and (barrier.startswith('first:') or barrier==round_identity_marker(self.round_view,self.round_session))):note='等待新对局'
             caption=self.language.t(title)
             if active:
-                caption+='\n'+self.language.t('新对局仅一次' if token in self.round_once else '每局监听中')+'\n'+self.language.t(note)
-                if token in ('@manual','@catalog') and not self.ready:caption=self.language.t('发送指令')+'\n'+self.language.t(note)
+                caption+='\n'+self.language.t('仅发送一次' if token in self.round_once else '每局监听中')+'\n'+self.language.t(note)
+                if display in ('@manual','@catalog') and not self.ready:caption=self.language.t('发送指令')+'\n'+self.language.t(note)
             state=(caption,active)
             if not force and getattr(button,'_round_view',None)==state:continue
             button._round_view=state
@@ -7055,7 +7138,10 @@ class App:
                     self.set_round_watch(token,True,'once' if token in once_fixed else 'every',restoring=True)
         if isinstance(custom,list):
             for index in custom:
-                if type(index) is int and 0<=index<len(self.custom):self.set_round_watch(str(self.custom[index][2]),True,'once' if index in once_rows else 'every',restoring=True)
+                if type(index) is int and 0<=index<len(self.custom):
+                    token=str(self.custom[index][2])
+                    if self.round_owner(token)==token:
+                        self.set_round_watch(token,True,'once' if index in once_rows else 'every',restoring=True)
         fixed_barriers=settings.get('round_fixed_barriers',{})
         custom_barriers=settings.get('round_custom_barriers',{})
         def restore(token,value):
@@ -7107,7 +7193,7 @@ class App:
         entry=ttk.Entry(row,textvariable=self.manual_command,width=1);entry.grid(row=0,column=1,sticky='ew')
         entry.bind('<Return>',lambda _:self.click_round_button('@manual'))
         self.round_button(row,'发送指令',self.manual_command.get,'@manual').grid(row=0,column=2,padx=7)
-        self.manual_command.trace_add('write',lambda *_:self.set_round_watch('@manual',False) if '@manual' in self.round_enabled else None)
+        self.manual_command.trace_add('write',lambda *_:self.round_text_changed('@manual'))
         ttk.Button(row,text='存为自定义',style='Small.TButton',command=self.store_manual).grid(row=0,column=3,sticky='e')
     def set_bot_count(self):
         try:value=bounded_int(self.vars['bot_count'].get(),0,64,'BOT 数量')
@@ -7121,7 +7207,7 @@ class App:
         ttk.Entry(frame,textvariable=value,width=1).grid(row=0,column=1,sticky='ew',pady=6)
         token=str(value)
         self.round_button(frame,'发送',value.get,token).grid(row=0,column=2,padx=7,pady=4)
-        value.trace_add('write',lambda *_:self.set_round_watch(token,False) if token in self.round_enabled else None)
+        value.trace_add('write',lambda *_:self.round_text_changed(token))
         ttk.Button(frame,text='×',width=2,style='Small.TButton',command=lambda:self.delete_custom(item)).grid(row=0,column=3,padx=(0,7))
         if self.language.widgets:self.language.capture(frame)
         for var in (name,value):self.watch_setting(var)
@@ -7149,7 +7235,7 @@ class App:
         line.columnconfigure(0,weight=1)
         self.catalog_command=tk.StringVar();ttk.Entry(line,textvariable=self.catalog_command,width=1).grid(row=0,column=0,sticky='ew')
         self.round_button(line,'发送指令',self.catalog_command.get,'@catalog').grid(row=0,column=1,padx=(10,8))
-        self.catalog_command.trace_add('write',lambda *_:self.set_round_watch('@catalog',False) if '@catalog' in self.round_enabled else None)
+        self.catalog_command.trace_add('write',lambda *_:self.round_text_changed('@catalog'))
         ttk.Button(line,text='存为自定义',style='Small.TButton',command=self.catalog_to_custom).grid(row=0,column=2,sticky='e')
         self.search.trace_add('write',self.schedule_filter);self.category.trace_add('write',self.schedule_filter);self.filter_catalog()
     def schedule_filter(self,*_):
@@ -7344,11 +7430,15 @@ class App:
             self._poll_error=error
         finally:
             try:
-                if self.root.winfo_exists():self.root.after(100,self.poll)
+                if self.root.winfo_exists():
+                    self.root.after(10 if not self.events.empty() else 100, self.poll)
             except tk.TclError:pass
     def poll_once(self):
+        deadline = time.monotonic() + 0.012
         try:
-            while True:
+            for index in range(64):
+                if index and time.monotonic() >= deadline:
+                    break
                 kind,data=self.events.get_nowait()
                 if kind=='state':
                     old_epoch=self.epoch
@@ -7437,6 +7527,8 @@ class App:
                         if self.persist_logs:HostLogArchive.sweep(self.path)
                         self.root.destroy();return
         except queue.Empty:pass
+        if not self.events.empty():
+            return  # Finish queued state transitions before issuing work.
         self.advance_listeners()
         self.apply_capabilities()
         if not self.closing and self.auto_connect and self.ensure_worker():

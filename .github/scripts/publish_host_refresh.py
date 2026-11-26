@@ -60,7 +60,7 @@ def main():
     old = next(a for a in before['assets'] if a['name'] == name)
     others = sorted((signature(a) for a in before['assets'] if a['id'] != old['id']), key=lambda a: a['id'])
     old_tag = api('git/ref/tags/' + tag)['object']['sha']
-    notes = (root / 'RELEASE.md').read_text('utf8')
+    notes = before['body']  # Release notes are maintained by the dedicated workflow.
     staged_name = 'cso2-host-tool.' + os.environ['GITHUB_RUN_ID'] + '.' + os.environ.get('GITHUB_RUN_ATTEMPT', '1') + '.pyw'
     previous_name = 'cso2-host-tool.previous-' + str(old['id']) + '.pyw'
 
@@ -86,10 +86,9 @@ def main():
         api('releases/assets/' + str(old['id']), '-X', 'PATCH', '-f', 'name=' + previous_name)
         try:
             api('releases/assets/' + str(uploaded['id']), '-X', 'PATCH', '-f', 'name=' + name)
-            gh('release', 'edit', tag, '--notes-file', root / 'RELEASE.md')
             after = api('releases/tags/' + tag)
             check_asset(next(a for a in after['assets'] if a['name'] == name))
-            assert after['body'].replace('\r\n', '\n').strip() == notes.strip()
+            assert after['body'] == notes, 'Release notes changed during publication'
         except Exception:
             current = api('releases/tags/' + tag)
             if any(a['id'] == uploaded['id'] and a['name'] == name for a in current['assets']):
