@@ -427,6 +427,15 @@ class WinMemory:
             fn=getattr(self.k,name);fn.restype=ret;fn.argtypes=args
         self.handle=self.k.OpenProcess(0x410,False,pid)
         if not self.handle:raise OSError(f'无法读取游戏（Windows 错误 {C.get_last_error()}；请检查两边运行权限）')
+    def process_identity(self):
+        if not hasattr(self,'_process_identity'):
+            fn=self.k.GetProcessTimes;fn.restype=W.BOOL
+            fn.argtypes=[W.HANDLE]+[C.POINTER(W.FILETIME)]*4
+            created,ended,kernel,user=(W.FILETIME() for _ in range(4))
+            if not fn(self.handle,C.byref(created),C.byref(ended),C.byref(kernel),C.byref(user)):
+                raise C.WinError(C.get_last_error())
+            self._process_identity=(self.pid,(created.dwHighDateTime<<32)|created.dwLowDateTime)
+        return self._process_identity
     def read(self,address,size):
         if not 0x10000<=address<0xffff0000 or not 0<size<=4*1024*1024:raise RuntimeError('读取地址或长度异常')
         buf=C.create_string_buffer(size);n=C.c_size_t()
@@ -482,6 +491,7 @@ class WinMemory:
 def command_bytes(text):
     text=str(text).strip()
     if not text or any(ord(ch)<32 or ord(ch)==127 for ch in text):raise ValueError('指令不能为空，也不能包含换行或控制字符')
+    if not console_segments(text):raise ValueError('指令不能为空')
     data=(text+'\n').encode('utf-8')+b'\0'
     if len(data)>512:raise ValueError('指令过长，UTF-8 编码后最多 510 字节')
     return data
@@ -500,13 +510,15 @@ def console_segments(text):
     if tokens:result.append(tokens)
     return result
 
+CHAT_BYTE_LIMIT=180
+
 def chat_command(text,team=False):
     text=text.strip()
     if not text:raise ValueError('请先输入喊话内容')
     # The Source tokenizer does not give us a reliable escaped quote syntax.
     if any(ch in text for ch in ('"',';','\n','\r','\0','\\')) or any(ord(ch)<32 for ch in text):
         raise ValueError('喊话请使用单行文字，不要包含双引号、分号或反斜杠')
-    if len(text.encode('utf-8'))>180:raise ValueError('喊话最多 180 字节（约 60 个汉字）')
+    if len(text.encode('utf-8'))>CHAT_BYTE_LIMIT:raise ValueError('喊话最多 180 字节（约 60 个汉字）')
     return ('say_team' if team else 'say')+' "'+text+'"'
 
 def bot_stop_target(text):
@@ -664,7 +676,7 @@ def player_frame_stub(control):
 
 class PlayerActionQueue:
     def __init__(self,backend):
-        self.b=backend;self.m=backend.mem;self.k=self.m.k;self.handle=None;self.address=0;self.pending=False;self.installed=False;self.result_offset=None
+        self.b=backend;self.m=backend.mem;self.k=self.m.k;self.handle=None;self.address=0;self.pending=False;self.installed=False;self.result_offset=None;self.generation=0
         specs={'OpenProcess':(W.HANDLE,[W.DWORD,W.BOOL,W.DWORD]),
             'VirtualAllocEx':(C.c_void_p,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD,W.DWORD]),
             'VirtualProtectEx':(W.BOOL,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD,C.POINTER(W.DWORD)]),
@@ -743,6 +755,7 @@ class PlayerActionQueue:
         data=build(self.request)
         if len(data)>8192:raise ValueError('原生操作参数过大')
         self.write(self.request,data)
+        self.generation+=1
         self.result_offset=result_offset
         if not self.k.FlushInstructionCache(self.handle,self.request,len(data)):raise C.WinError(C.get_last_error())
         self.previous=self.checked_previous();self.write(self.control+20,struct.pack('<I',self.previous))
@@ -1762,6 +1775,7 @@ class Backend:
             if key=='buy':self.probe_buy_time()
             return
         if key=='local_commands':command_entry(self);return
+        if key=='zeta':self.require_zeta();self.mutation_state();return
         if key in ('mutation','mutation_read'):
             self.require_zeta();self.mutation_state();command_entry(self)
             if key=='mutation' and not self.cheats_value():raise NotReady('需要先开启 sv_cheats')
@@ -1770,7 +1784,7 @@ class Backend:
         raise NotReady('未登记的功能：'+key)
     def refresh_capabilities(self):
         self.capabilities={key:probe_result(lambda k=key:self.probe_feature(k)) for key in
-            ('commands','chat','local_commands','roster','hp','money','ammo','scale','buy','invulnerable','cheats','ghost','mutation','mutation_read','machine','heroes','heroes_upgrade','heroes_model','heroes_custom_damage','heroes_no_attack','weapon_spawn')}
+            ('commands','chat','local_commands','roster','hp','money','ammo','scale','buy','invulnerable','cheats','ghost','zeta','mutation','mutation_read','machine','heroes','heroes_upgrade','heroes_model','heroes_custom_damage','heroes_no_attack','weapon_spawn')}
         self.capabilities['bot_skins']=dict(self.capabilities['roster'])  # Validate the skin catalog on demand.
         return self.capabilities
     def require(self,key):
@@ -1781,6 +1795,30 @@ class Backend:
             if bot_stop_target(text) is not None:self.prepare_bot_stop()
             else:self.verify_command(text)
         return probe_result(check)
+    def listener_cvar(self,name):
+        if name not in ('mp_friendlyfire','mp_roundtime','bot_chatter','bot_difficulty','bot_quota','bot_quota_mode'):
+            raise ValueError('未登记的监听变量')
+        self.require_local()
+        entry=self.catalog.get(name)
+        if not entry or entry['kind']!='variable':raise NotReady('等待变量登记')
+        for source in entry['sources']:
+            module=source['module']
+            if module not in self.mods or module=='server.dll' and not self.server:continue
+            obj=self.mods[module][0]+source['rva'];m=self.mem
+            try:
+                if m.u32(obj+8)!=1 or m.string(m.u32(obj+12),64)!=name:continue
+                parent=m.u32(obj+28)
+                if not parent or m.string(m.u32(parent+12),64)!=name:continue
+                if name in ('bot_chatter','bot_quota_mode'):
+                    value=m.string(m.u32(parent+40),64)
+                    allowed=('off','radio','minimal','normal') if name=='bot_chatter' else ('normal','fill','match')
+                    if value in allowed:return value
+                    continue
+                floating,integer=struct.unpack('<fi',m.read(parent+48,8))
+                if not math.isfinite(floating) or int(floating)!=integer:continue
+                return format(floating,'.9g')
+            except Exception:continue
+        raise NotReady('等待变量可读')
     def bot_stop_value(self):
         self.require('local_commands')
         entry=self.catalog.get('bot_stop')
@@ -2305,6 +2343,22 @@ class Backend:
                 return dict(key=player.key,record=record,available=available,total=total)
             node=m.u32(node if self.local_index<index else node+8)
         raise NotReady('当前玩家尚未建立变异记录')
+    def zeta_has_skill(self,key,skill):
+        self.require_zeta();self.validate(key,False);m=self.mem
+        def lookup(head,want):
+            node=m.u32(head+4)
+            for _ in range(128):
+                if not node or node==head or m.read(node+0xd,1)!=b'\0':return 0
+                current=m.u32(node+0x10)
+                if current==want:return m.u32(node+0x14)
+                node=m.u32(node if want<current else node+8)
+            raise NotReady('技能名单正在变化')
+        head=m.u32(self.server+0xc6b038)
+        if not head:return False
+        owner=lookup(head,key.address)
+        if not owner:return False
+        head=m.u32(owner+0x154)
+        return bool(head and lookup(head,skill))
     def add_mutations(self,count):
         count=bounded_int(count,1,10,'单次增加次数');before=self.mutation_state()
         if max(before['available'],before['total'])+count>255:raise ValueError('原生变异计数是一个字节，本次增加会溢出，已拒绝')
@@ -2929,7 +2983,7 @@ class HostBotSkins:
 class Controls:
     """Identity-bound locks. Disable restores limits/scale, never old health or cash."""
     def __init__(self,backend,caps):
-        self.b=backend;self.caps=caps;self.keys=[];self.hp=None;self.money=None;self.ammo=False;self.scale=None;self.saved={};self.buy=False;self.buy_saved={}
+        self.b=backend;self.caps=caps;self.keys=[];self.field_keys={'hp':set(),'money':set()};self.hp=None;self.money=None;self.ammo=False;self.scale=None;self.saved={};self.buy=False;self.buy_saved={}
         self.invulnerable=False;self.damage_saved={};self.buy_time_active=False
         self.ghost=False;self.ghost_keys=set();self.ghost_saved={};self.ghost_next_at=0.
         self.ghost_manual=set();self.ghost_skip=set()
@@ -2944,6 +2998,19 @@ class Controls:
         record=(key,field)
         if record not in self.saved:self.saved[record]=[self.b.mem.read(key.address+field,size),None]
         return self.saved[record]
+    def configure_field_lock(self,field,keys,value=None):
+        if field not in ('hp','money'):raise ValueError('未知锁定字段')
+        valid=set()
+        for key in keys:
+            try:self.b.validate(key,False);valid.add(key)
+            except PlayerUnavailable:continue
+        previous=getattr(self,field) or {}
+        values={key:(value if value is not None else previous[key]) for key in valid if value is not None or key in previous}
+        self.field_keys[field]=valid
+        setattr(self,field,values if valid else None)
+        self.keys=list(self.field_keys['hp']|self.field_keys['money'])
+        errors=self.restore_value_limits()
+        if errors:raise RuntimeError('锁定范围已更新，原值等待恢复：'+errors[0])
     def configure_value_locks(self,keys,hp_enabled,money_enabled):
         keys=list(dict.fromkeys(keys));players={}
         for key in keys:
@@ -2962,17 +3029,18 @@ class Controls:
                                             1 if field=='hp' else 0,999999,'当前数值')
             updates[field]=values
         self.keys=keys;self.hp=updates['hp'];self.money=updates['money']
+        self.field_keys={field:set(keys) if updates[field] is not None else set() for field in ('hp','money')}
         errors=self.restore_value_limits()
         if errors:raise RuntimeError('锁定已更新，旧临时上限仍待恢复：'+errors[0])
     def restore_value_limits(self):
         errors=[]
         for field,offset in (('hp',0xf0),('money',0x1c40)):
-            owned=set(self.keys) if getattr(self,field) is not None else set()
+            owned=self.field_keys[field] if getattr(self,field) is not None else set()
             removed={key for key,at in self.saved if at==offset}-owned
             errors+=self.restore({offset},keys=removed)
         return errors
     def apply_value(self,field,key,value):
-        values=getattr(self,field);locked=values is not None and key in self.keys
+        values=getattr(self,field);locked=values is not None and key in self.field_keys[field]
         if locked:
             offset=0xf0 if field=='hp' else 0x1c40
             rec=self.remember(key,offset,4)
@@ -2987,7 +3055,8 @@ class Controls:
         for field in ('hp','money'):
             values=getattr(self,field)
             if values is not None:
-                for key in set(values)-set(self.keys):values.pop(key,None)
+                self.field_keys[field].intersection_update(valid)
+                for key in set(values)-self.field_keys[field]:values.pop(key,None)
         # Drop restoration ownership only after a fresh, stable roster proves
         # the old entity is gone. Dead players still retain restoration records.
         self.saved={record:value for record,value in self.saved.items() if record[0] in valid}
@@ -3017,7 +3086,7 @@ class Controls:
             try:
                 for field in ('hp','money'):
                     values=getattr(self,field)
-                    if values is None:continue
+                    if values is None or key not in self.field_keys[field]:continue
                     if key not in values:
                         player=self.b.validate(key,False)
                         if not can_set_player_values(player):continue
@@ -3154,6 +3223,7 @@ class Controls:
         return errors
     def stop(self,restore=True):
         self.hp=self.money=self.scale=None;self.ammo=False;self.buy=False;self.invulnerable=False;self.ghost=False;self.ghost_next_at=0.;self.keys=[]
+        self.field_keys={'hp':set(),'money':set()}
         self.invulnerable_keys=[];self.invulnerable_done.clear()
         self.ghost_keys.clear();self.ghost_manual.clear();self.ghost_skip.clear()
         errors=self.restore() if restore else []
@@ -3262,6 +3332,259 @@ class RoundTeleports:
             self.wait_message(str(ex))
         return None
 
+def round_identity_marker(identity,session):
+    if identity is None:return None
+    # Tool-local epochs change after restart; the game process and native round do not.
+    stable=identity
+    if len(identity)==3 and isinstance(identity[0],tuple) and len(identity[0])==3:
+        stable=(identity[0][1:],identity[1],identity[2])
+    return hashlib.sha256(repr((session,stable)).encode('utf-8')).hexdigest()
+
+class ListenerScheduler:
+    """UI-owned plans. Worker acknowledgements are scoped to a revision and dispatch."""
+    def __init__(self,clock=time.monotonic):
+        self.clock=clock;self.serial=0;self.jobs={};self.history={}
+    def arm(self,key,action,data,mode='once',skip=None):
+        spec=(action,data,mode,skip)
+        previous=self.jobs.get(key)
+        if previous and previous['spec']==spec:return previous['revision']
+        self.serial+=1
+        self.jobs[key]=dict(spec=spec,revision=self.serial,pending=None,done=None,blocked=None,
+                            retry_at=0.,state='waiting',error='',dispatch=0)
+        self.history.pop(key,None)
+        return self.serial
+    def cancel(self,key):
+        self.jobs.pop(key,None);self.history.pop(key,None)
+    def clear(self):
+        self.jobs.clear();self.history.clear()
+    def versions(self):return {k:(j['revision'],j['dispatch']) for k,j in self.jobs.items()}
+    def dispatch(self,key,stamp,payload,submit):
+        job=self.jobs.get(key)
+        if not job or stamp is None or job['pending'] is not None:return False
+        if stamp==job['done'] or stamp==job['blocked'] or stamp==job['spec'][3]:return False
+        if self.clock()<job['retry_at']:return False
+        job['dispatch']+=1
+        ticket=dict(listener=key,revision=job['revision'],dispatch=job['dispatch'],stamp=stamp,
+                    action=job['spec'][0],data=payload)
+        if not submit(ticket):job['retry_at']=self.clock()+1.;return False
+        job['pending']=(job['dispatch'],stamp);job['state']='queued';return True
+    def accept(self,result):
+        key=result['listener'];job=self.jobs.get(key)
+        if not job or result['revision']!=job['revision'] or job['pending']!=(result['dispatch'],result['stamp']):return None
+        job['pending']=None
+        if result['success']:
+            job['done']=result['stamp'];job['state']=result.get('state','submitted');job['error']=''
+            self.history[key]=job['state']
+            if job['spec'][2]=='once':self.jobs.pop(key,None);return key
+        else:
+            job['error']=result.get('error','');job['state']='waiting' if result.get('retry') else 'failed'
+            if result.get('terminal'):
+                self.history[key]='rejected';self.jobs.pop(key,None);return key
+            if result.get('retry'):job['retry_at']=self.clock()+1.5
+            else:job['blocked']=result['stamp']
+        return None
+    def context_lost(self):
+        for job in self.jobs.values():
+            # Epoch and generation guards on the worker reject the old queued operation.
+            if job['pending'] is not None:
+                self.serial+=1;job['revision']=self.serial
+            job['pending']=None;job['state']='waiting';job['retry_at']=0.
+
+def listener_player_keys(players,scope):
+    roster=[p for p in players if p.team in (2,3)]
+    local=next((p for p in roster if p.local),None)
+    if local is None:return []
+    if scope=='self':roster=[local]
+    elif scope=='team':roster=[p for p in roster if p.team==local.team and p.key!=local.key]
+    elif scope!='both':return []
+    return sorted((p.key for p in roster),key=lambda k:k.index)
+
+
+def zeta_choice_code(remote,server):
+    control=remote+0x800;code=bytearray();labels={};fixups=[]
+    def emit(h):code.extend(bytes.fromhex(h))
+    def imm(n):code.extend(struct.pack('<I',n))
+    def jump(op,label):
+        emit(op);fixups.append((len(code),label));code.extend(bytes(4))
+    emit('558bec5356578bf1ff7508b8');imm(server+0xdd690);emit('ffd09c60bb');imm(control)
+    emit('837b0401');jump('0f85','done')
+    emit('8b55083b5308');jump('0f85','done')
+    emit('3b7314');jump('0f85','done')
+    emit('3b35');imm(server+0xc555c8);jump('0f85','done')
+    emit('8b4b0c3911');jump('0f85','done')
+    emit('8b41043b4310');jump('0f85','done')
+    emit('ff15');imm(server+0x76616c);emit('2b4320');jump('0f89','done')
+    emit('8b0d');imm(server+0xc620e0);emit('8b15');imm(server+0xc620e4)
+    emit('8bc22bc1');jump('0f82','missing')
+    emit('3d00100000');jump('0f87','missing')
+    emit('a803');jump('0f85','missing')
+    labels['loop']=len(code);emit('3bca');jump('0f83','missing')
+    emit('8b018b73183930');jump('0f84','found')
+    emit('83c104');jump('e9','loop')
+    labels['missing']=len(code);emit('33c0')
+    labels['found']=len(code);emit('8944241c')
+    labels['done']=len(code);emit('619d5f5e5b8be55dc20400')
+    for at,label in fixups:struct.pack_into('<i',code,at,labels[label]-at-4)
+    return bytes(code)
+
+class ZetaChoiceHook:
+    def __init__(self,b):
+        self.b=b;self.m=b.mem;self.k=self.m.k;self.handle=None;self.remote=0;self.pending=False;self.protection=None
+        self.target=b.server+0xdabf0;self.original=b'\xe8'+struct.pack('<i',0xdd690-0xdabf5)
+        self.installed=False
+        for name,ret,args in (
+            ('VirtualAllocEx',C.c_void_p,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD,W.DWORD]),
+            ('VirtualProtectEx',W.BOOL,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD,C.POINTER(W.DWORD)]),
+            ('FlushInstructionCache',W.BOOL,[W.HANDLE,C.c_void_p,C.c_size_t]),('GetTickCount',W.DWORD,[])):
+            fn=getattr(self.k,name);fn.restype=ret;fn.argtypes=args
+        b.verify_file('server.dll')
+        checks=((0xdd690,bytes.fromhex('558bec83e4f8')),(0xdabed,bytes.fromhex('578bcb')),
+                (0xdabf5,bytes.fromhex('8be885f6')),(0xdd8b9,b'\xa1'+struct.pack('<I',b.server+0xc620e0)+bytes.fromhex('8b0488')))
+        if any(self.m.read(b.server+r,len(v))!=v for r,v in checks):raise NotReady('突变抽取路径未验证')
+        if b.verify_file('server.dll').read_rva(0x76616c,4)!=SKIN_TICK_IMPORT:raise NotReady('突变监听计时入口未验证')
+        self.handle=self.k.OpenProcess(0x0438,False,self.m.pid)
+        if not self.handle:raise C.WinError(C.get_last_error())
+        try:
+            entry=self.m.read(self.target,5)
+            if entry!=self.original:
+                if entry[0]!=0xe8:raise NotReady('突变抽取入口已变化')
+                remote=(self.target+5+struct.unpack_from('<i',entry,1)[0])&0xffffffff
+                code=zeta_choice_code(remote,b.server)
+                if self.m.read(remote+0x800,4)!=b'ZTM1' or self.m.u32(remote+0x828)!=b.server or self.m.read(remote,len(code))!=code:
+                    raise NotReady('突变抽取入口由其他修改占用')
+                if self.m.u32(remote+0x804)==1 and ((self.k.GetTickCount()-self.m.u32(remote+0x820))&0xffffffff)>=0x80000000:
+                    raise NotReady('另一个房主工具正在指定突变')
+                self.remote=remote;self.installed=True
+            else:
+                self.remote=self.k.VirtualAllocEx(self.handle,None,4096,0x3000,0x40)
+                if not self.remote or self.remote>=0xffff0000:raise NotReady('无法建立突变监听')
+                self.m.write(self.remote,zeta_choice_code(self.remote,b.server))
+                self.m.write(self.remote+0x800,b'ZTM1'+bytes(36)+struct.pack('<I',b.server))
+                if not self.k.FlushInstructionCache(self.handle,self.remote,0x800):raise C.WinError(C.get_last_error())
+        except Exception:
+            self.k.CloseHandle(self.handle);self.handle=None;raise
+    def protect_restore(self):
+        if self.protection is not None:
+            old=W.DWORD()
+            if not self.k.VirtualProtectEx(self.handle,self.target,5,self.protection,C.byref(old)):raise C.WinError(C.get_last_error())
+            self.protection=None
+    def configure(self,state,skill):
+        b=self.b
+        if self.pending:
+            if not b.player_queue:return False
+            if b.player_queue.generation==self.generation and not b.player_queue.poll():return False
+            self.pending=False;self.protect_restore()
+            self.k.FlushInstructionCache(self.handle,self.target,5)
+            if self.m.read(self.target,5)!=self.patch:raise NotReady('突变监听入口未安装')
+            self.installed=True
+        if not self.installed:
+            if b.player_queue and b.player_queue.pending:return False
+            if self.m.read(self.target,5)!=self.original:raise NotReady('突变监听入口已变化')
+            self.patch=b'\xe8'+struct.pack('<I',(self.remote-self.target-5)&0xffffffff)
+            old=W.DWORD()
+            if not self.k.VirtualProtectEx(self.handle,self.target,5,0x40,C.byref(old)):raise C.WinError(C.get_last_error())
+            self.protection=old.value
+            expected=self.m.read(self.target,8)
+            guards=b.action_guards(state['key'])+[(self.target,struct.unpack_from('<I',expected)[0]),(self.target+4,struct.unpack_from('<I',expected,4)[0])]
+            body=b'\xc7\x05'+struct.pack('<II',self.target,struct.unpack_from('<I',self.patch)[0])+b'\xc6\x05'+struct.pack('<I',self.target+4)+self.patch[4:]
+            try:
+                b.submit_player_native(lambda r:player_action_stub(r,guards,lambda _:body));self.pending=True
+                self.generation=b.player_queue.generation
+            except Exception:self.protect_restore();raise
+            return False
+        key=state['key'];self.m.write(self.remote+0x804,bytes(4))
+        self.m.write(self.remote+0x808,struct.pack('<7I',key.address,b.server+0xa5fa44+key.index*16,key.serial,
+            self.m.u32(b.server+0xc555c8),skill,state['record'],(self.k.GetTickCount()+5000)&0xffffffff))
+        self.m.write(self.remote+0x804,struct.pack('<I',1));return True
+    def close(self):
+        try:
+            if self.remote:self.m.write(self.remote+0x804,bytes(4))
+            try:
+                if self.pending and self.b.player_queue:
+                    until=time.monotonic()+2.2
+                    while self.pending and time.monotonic()<until:
+                        if self.b.player_queue.generation!=self.generation or self.b.player_queue.poll():self.pending=False;break
+                        time.sleep(.02)
+            finally:
+                if self.pending and self.b.player_queue and not self.b.player_queue.pending:self.pending=False
+                if not self.pending:self.protect_restore()
+        finally:
+            if self.handle:self.k.CloseHandle(self.handle);self.handle=None
+        # The inactive wrapper always calls the original selector. Keep its page valid for in-flight calls.
+
+class ZetaControls:
+    def __init__(self,worker):self.w=worker;self.jobs={};self.hook=None;self.next_scan=0.
+    def start(self,action,data,ticket):
+        if action in self.jobs:raise NotReady('上一项突变设置正在处理')
+        self.jobs[action]=dict(action=action,data=dict(data),ticket=ticket,epoch=self.w.b.epoch,submitted=False)
+    def cancel(self,action=None):
+        targets=[self.jobs.pop(action,None)] if action else list(self.jobs.values())
+        if not action:self.jobs.clear()
+        for job in targets:
+            if not job or not job.get('submitted'):continue
+            q=job.get('queue')
+            if q and q.pending and q.generation==job['generation']:
+                # Only requests that have not entered the native call can be cancelled.
+                q.write(q.request+508,bytes(4))
+        if self.hook and action in (None,'zeta_skill'):
+            try:self.hook.close()
+            finally:self.hook=None
+    def step(self):
+        for job in list(self.jobs.values()):self.step_job(job)
+    def step_job(self,job):
+        b=self.w.b;action=job['action']
+        ticket=job['ticket']
+        try:
+            if ticket and not self.w.listener_current(ticket):self.cancel(action);return
+            if job['epoch']!=b.epoch or b.current_context()!=b.context:raise NotReady('等待新的 ZETA 对局')
+            state=b.mutation_state();action=job['action'];data=job['data']
+            if action=='zeta_skill':
+                skill=bounded_int(data['skill'],1,100000,'突变技能')
+                if skill not in {r['id'] for r in ZETA_SKILLS}:raise ValueError('请选择有效突变技能')
+                if b.zeta_has_skill(state['key'],skill):
+                    if not job.get('armed'):
+                        self.cancel(action)
+                        reason='已拥有该技能，请选择其他技能'
+                        self.w.listener_result(ticket,False,'rejected',error=reason,terminal=True)
+                        self.w.emit('bio_state',text=reason);return
+                    self.cancel(action);self.w.listener_result(ticket,True,'applied');self.w.emit('bio_state',text='已确认取得指定突变技能');return
+                if not self.hook:self.hook=ZetaChoiceHook(b)
+                if self.hook.configure(state,skill):
+                    if not job.get('armed'):
+                        job['armed']=True;self.w.emit('bio_state',text='指定突变已就绪，等待原生突变按键')
+                        if ticket:self.w.emit('listener_progress',listener=ticket['listener'],revision=ticket['revision'],dispatch=ticket['dispatch'],state='armed')
+                return
+            if not job['submitted']:
+                amount=bounded_int(data['amount'],1,255,'增加数值')
+                if b.player_queue and b.player_queue.pending:return
+                key=state['key'];record=state['record'];guards=b.action_guards(key)
+                guards += [(record+8,(key.serial<<16)|key.index)]
+                if action=='zeta_points':
+                    if max(state['available'],state['total'])+amount>255:raise ValueError('突变点数超出原生 255 上限')
+                    guards.append((record+0x20,b.mem.u32(record+0x20)));job['want']=state['available']+amount
+                    body=b'\xb9'+struct.pack('<I',record)+b'\x68'+struct.pack('<I',amount)+b'\xb8'+struct.pack('<I',b.server+0xdb540)+b'\xff\xd0'
+                    body+=b'\xb9'+struct.pack('<I',record)+b'\x68'+struct.pack('<I',key.address)+b'\xb8'+struct.pack('<I',b.server+0xda4f0)+b'\xff\xd0'
+                elif action=='zeta_limit':
+                    limit=b.mem.u32(record+0x40);maximum=b.mem.u32(b.server+0xa5c164)
+                    if not 0<=limit<=maximum<=1024:raise NotReady('技能容量数据未验证')
+                    job['want']=min(limit+amount,maximum)
+                    if job['want']==limit:raise ValueError('技能容量已达到原生目录上限')
+                    guards.append((record+0x40,limit));body=b'\xc7\x05'+struct.pack('<II',record+0x40,job['want'])
+                else:raise ValueError('未知突变设置')
+                def build(remote):
+                    return player_action_stub(remote,guards+[(remote+508,1)],lambda _:body,code_size=508)+struct.pack('<I',1)
+                b.submit_player_native(build);job['submitted']=True
+                job['queue']=b.player_queue;job['generation']=b.player_queue.generation;return
+            q=job['queue']
+            if q.generation==job['generation'] and not q.poll():return
+            actual=b.mutation_state()['available'] if action=='zeta_points' else b.mem.u32(state['record']+0x40)
+            if actual!=job['want']:raise RuntimeError('突变设置已执行，但当前数值未确认；未重复增加')
+            self.jobs.pop(action,None);self.w.listener_result(ticket,True,'applied');self.w.emit('bio_state',text=('突变点数：' if action=='zeta_points' else '技能数量上限：')+str(actual))
+        except Exception as exc:
+            submitted=job.get('submitted',False);self.cancel(action)
+            self.w.listener_result(ticket,False,error=str(exc),retry=isinstance(exc,(NotReady,PlayerUnavailable)) and not submitted)
+            self.w.emit('error',text=str(exc))
+
 class Worker(threading.Thread):
     def __init__(self,events,caps):
         super().__init__(name='CSO2 host worker',daemon=True)
@@ -3282,6 +3605,7 @@ class Worker(threading.Thread):
         self.auto_connect=False;self.connection_game=None;self.connection_generation=0
         self.next_connect=0.;self.connect_error='';self.retry_interval=1.5
         self.next_candidate_check=0.
+        self.listener_versions={};self._listener_ticket=None;self.runtime_revision=0;self.zeta=ZetaControls(self)
     def emit(self,kind,**data):self.events.put((kind,data))
     def emit_flags(self):
         self.emit_host_watch()
@@ -3304,6 +3628,9 @@ class Worker(threading.Thread):
             except queue.Full:
                 self.emit('error',text='待执行操作已满，本次点击未提交；请等待或点击停止');self.emit_flags();return False
     def reset(self,restore=True,keep_skin_rules=False,keep_teleport_rules=False):
+        self.runtime_revision+=1
+        try:self.zeta.cancel()
+        except Exception as exc:self.emit('error',text='突变监听清理：'+str(exc))
         self.round_teleports.reset(keep_teleport_rules,restore and keep_teleport_rules)
         if not keep_skin_rules:self.ghost_watch=False;self.skin_once.clear()
         self.host_watch_error.clear()
@@ -3465,6 +3792,116 @@ class Worker(threading.Thread):
         if not self.auto_paused:
             active=self.round_teleports.step(self.players)
             if active:self.teleport_active=active
+    def listener_current(self,ticket):
+        return self.listener_versions.get(ticket['listener'])==(ticket['revision'],ticket['dispatch']) and not self.quit.is_set()
+    def listener_result(self,ticket,success,state='submitted',error='',retry=False,terminal=False):
+        if ticket and self.listener_current(ticket):
+            self.emit('listener_result',listener=ticket['listener'],revision=ticket['revision'],
+                      dispatch=ticket['dispatch'],stamp=ticket['stamp'],success=success,state=state,error=error,retry=retry,terminal=terminal)
+    def execute_listener(self,ticket):
+        if not self.listener_current(ticket):return
+        inner=dict(ticket['data']);inner['_generation']=self.request_generation
+        try:
+            if not self.b.mem or inner.get('epoch')!=self.b.epoch or self.b.current_context()!=self.b.context:
+                raise NotReady('等待有效的新对局')
+            action=ticket['action']
+            if action=='command' and self.command_matches(inner['text']):
+                self.listener_result(ticket,True,'matched');return
+            if action=='machine_reroll' and inner.get('key') is None:
+                rows=self.b.machines()
+                target=next((r for r in rows if r.enabled and not r.pending),None)
+                if target is None:raise NotReady('等待已启用的变异机器')
+                inner['key']=target.key
+            if action=='heroes_model' and inner.pop('all_players',False):
+                inner['keys']=[p.key for p in self.players if p.team in (2,3)]
+                if not inner['keys']:raise NotReady('等待玩家模型加载')
+            self._listener_ticket=ticket
+            self.execute(action,inner)
+            if action in ('weapon_spawn','zeta_limit','zeta_points','zeta_skill') or (action=='command' and bot_stop_target(inner['text']) is not None):
+                return  # Existing deferred state machines acknowledge the actual submission/readback.
+            self.listener_result(ticket,True,'applied' if action=='scope_apply' else 'submitted')
+        except Exception as exc:
+            self.listener_result(ticket,False,error=str(exc),retry=ticket['listener'].startswith('stop:') or isinstance(exc,(NotReady,PlayerUnavailable)))
+        finally:self._listener_ticket=None
+    def command_matches(self,text):
+        parts=console_segments(text)
+        if not parts:return False
+        for part in parts:
+            if len(part)!=2:return False
+            name,target=part[0].lower(),part[1]
+            if name=='jointeam':
+                local=next((p for p in self.players if p.local),None)
+                if local is None or str(local.team)!=target:return False
+            elif name=='bot_stop':
+                if str(self.b.bot_stop_value())!=target:return False
+            elif name in ('mp_friendlyfire','mp_roundtime','bot_chatter','bot_difficulty','bot_quota','bot_quota_mode'):
+                try:actual=self.b.listener_cvar(name)
+                except Exception:return False
+                try:
+                    if not math.isclose(float(actual),float(target),rel_tol=1e-6):return False
+                except ValueError:
+                    if actual.casefold()!=target.casefold():return False
+            else:return False
+        return True
+    def apply_scope(self,data):
+        field=data['field'];keys=data.get('keys',[])
+        if field=='invulnerable':
+            self.controls.configure_invulnerability(keys,True)
+            self.emit('invulnerability_targets',keys=keys,auto=True);return
+        if field not in ('hp','money'):raise ValueError('未知玩家字段')
+        value=bounded_int(data.get('value',1),1 if field=='hp' else 0,999999,'数值')
+        self.b.require(field)
+        self.round_settings.configure(field,[],None)
+        self.controls.configure_field_lock(field,keys if data.get('lock') else [],value)
+        for key in keys:
+            try:
+                player=self.b.validate(key,False)
+                if not can_set_player_values(player):continue
+                actual=player.health if field=='hp' else player.money
+                if actual!=value:self.controls.apply_value(field,key,value)
+            except PlayerUnavailable:continue
+        self.emit_flags()
+    def report_round_buttons(self,players):
+        names=getattr(self,'round_button_names',())
+        matched=set()
+        session=None
+        try:
+            identity=self.b.round_sample()[:3]
+            session=self.b.mem.process_identity()
+        except Exception:
+            identity=None
+        if identity is not None:
+            if 'jointeam 1' in names and any(p.local and p.team==1 for p in players):
+                matched.add('jointeam 1')
+            if any(c in names for c in ('bot_stop 0','bot_stop 1')):
+                try:matched.add('bot_stop '+str(int(self.b.bot_stop_value())))
+                except Exception:pass
+        self.emit('round_buttons_state',epoch=self.b.epoch,round=identity,session=session,matched=tuple(matched))
+    def round_scope(self):
+        try:
+            session=self.b.mem.process_identity()
+        except OSError:
+            return None
+        return hashlib.sha256(repr((session,self.b.context)).encode('utf-8')).hexdigest()
+    def advance_chat_timer(self):
+        if not self.chat:return
+        messages,index,interval,due,epoch,owner=self.chat
+        if epoch!=self.b.epoch:
+            self.chat=None
+            self.emit('reset')
+            return
+        if owner and not self.listener_current(owner):
+            self.chat=None
+            return
+        if time.monotonic()<due:return
+        try:
+            self.b.send(messages[index])
+            self.chat=(messages,(index+1)%len(messages),interval,time.monotonic()+interval,epoch,owner)
+            self.emit('log',text='定时喊话已交给游戏命令队列')
+        except Exception as exc:
+            self.chat=None
+            self.emit('error',text='定时喊话已停止：'+str(exc))
+            self.emit_flags()
     def advance_each_round(self):
         if self.ground_spawn_pending:return
         if not self.each_round or self.auto_paused or time.monotonic()<self.cheats_next_at:return
@@ -3497,13 +3934,13 @@ class Worker(threading.Thread):
         if self.ground_spawn_pending:raise NotReady('上一条刷枪请求正在等待游戏处理')
         command=self.b.prepare_weapon_spawn(name)
         self.ground_spawn_pending=dict(name=name,command=command,stage='prepare',epoch=self.b.epoch,
-            context=self.b.context,generation=self.request_generation,deadline=time.monotonic()+8.)
+            context=self.b.context,generation=self.request_generation,deadline=time.monotonic()+8.,listener=self._listener_ticket)
         self.advance_ground_spawn()
     def advance_ground_spawn(self):
         job=self.ground_spawn_pending
         if job is None:return
         try:
-            if self.quit.is_set() or job['generation']!=self.request_generation:
+            if self.quit.is_set() or job['generation']!=self.request_generation or (job.get('listener') and not self.listener_current(job['listener'])):
                 self.ground_spawn_pending=None;return
             if not self.b.mem or job['epoch']!=self.b.epoch or job['context']!=self.b.current_context():
                 raise NotReady('对局或连接已变化，已取消地面刷枪')
@@ -3515,23 +3952,26 @@ class Worker(threading.Thread):
                 self.emit('log',text='刷枪正在开启 sv_cheats，读回生效后自动生成到地面');return
             if not cheats:return
             self.b.send(job['command']);self.ground_spawn_pending=None
+            self.listener_result(job.get('listener'),True)
             self.emit('log',text='已确认 sv_cheats=1，地面刷枪命令已提交：'+job['command']+'；落地结果以游戏为准')
         except Exception as ex:
-            self.ground_spawn_pending=None;self.emit('error',text='地面刷枪未完成：'+str(ex))
+            self.ground_spawn_pending=None;self.listener_result(job.get('listener'),False,error=str(ex))
+            self.emit('error',text='地面刷枪未完成：'+str(ex))
     def start_bot_stop(self,value):
         self.b.prepare_bot_stop()
         pending=self.bot_stop_pending
         if pending and pending['epoch']==self.b.epoch and pending['context']==self.b.context and pending['generation']==self.request_generation:
             # Preserve command ordering when pause/resume are clicked in quick succession.
+            if self._listener_ticket:raise NotReady('等待当前人机操作完成')
             pending['next_value' if pending['stage']=='result' else 'value']=value
             self.emit('log',text='已更新人机操作，等待当前指令处理后'+('暂停' if value else '恢复'));return
-        self.bot_stop_pending=dict(value=value,stage='prepare',epoch=self.b.epoch,context=self.b.context,generation=self.request_generation,deadline=time.monotonic()+8.)
+        self.bot_stop_pending=dict(value=value,stage='prepare',epoch=self.b.epoch,context=self.b.context,generation=self.request_generation,deadline=time.monotonic()+8.,listener=self._listener_ticket)
         self.advance_bot_stop()
     def advance_bot_stop(self):
         job=self.bot_stop_pending
         if job is None:return
         try:
-            if self.quit.is_set() or job['generation']!=self.request_generation:
+            if self.quit.is_set() or job['generation']!=self.request_generation or (job.get('listener') and not self.listener_current(job['listener'])):
                 self.bot_stop_pending=None;return
             if not self.b.mem or self.b.epoch!=job['epoch'] or self.b.current_context()!=job['context']:
                 raise NotReady('对局或连接已变化，已取消人机暂停/恢复请求')
@@ -3552,10 +3992,13 @@ class Worker(threading.Thread):
                 self.bot_stop_pending=None
                 if job.get('next_value',job['value'])!=job['value']:
                     self.start_bot_stop(job['next_value']);return
+                self.listener_result(job.get('listener'),True,'matched')
                 self.emit('log',text=('已暂停人机' if job['value'] else '已恢复人机')+'（已读回 bot_stop='+str(job['value'])+'）')
         except Exception as ex:
-            self.bot_stop_pending=None;self.emit('error',text=str(ex))
+            self.bot_stop_pending=None;self.listener_result(job.get('listener'),False,error=str(ex));self.emit('error',text=str(ex))
     def close_connection(self):
+        try:self.zeta.cancel()
+        except Exception as exc:self.emit('error',text='突变监听清理：'+str(exc))
         self.combat.close();self.heroes.close()
         try:self.bot_skins.close_spawn(False)
         except Exception as ex:self.emit('log',text='BOT 选肤清理：'+str(ex))
@@ -3601,6 +4044,7 @@ class Worker(threading.Thread):
         except (NotReady,OSError,CompatibilityError):return False
     def execute(self,action,data):
         if data.get('_generation',self.request_generation)!=self.request_generation:return
+        if action=='listener_execute':return self.execute_listener(data['ticket'])
         if action=='connect':
             self.auto_connect=True;self.auto_paused=False;self.connection_game=data.get('game')
             preferences=data.get('preferences')
@@ -3667,6 +4111,13 @@ class Worker(threading.Thread):
             for key in ('hp','money'):
                 if data.get(key+'_enabled'):self.b.require(key)
         if action=='once':self.b.require(data['field'])
+        if action in ('zeta_limit','zeta_points','zeta_skill'):return self.zeta.start(action,data,self._listener_ticket)
+        if action=='scope_apply':return self.apply_scope(data)
+        if action=='field_lock':
+            field=data['field']
+            if data['enabled']:self.b.require(field)
+            self.controls.configure_field_lock(field,data.get('keys',[]) if data['enabled'] else [])
+            self.round_settings.configure(field,[],None);self.emit_flags();return
         if action=='weapon_spawn':
             self.start_ground_spawn(data['weapon']);return
         if action=='heroes':
@@ -3717,11 +4168,16 @@ class Worker(threading.Thread):
                     if not self.bot_skins.prepare_spawn(self.skin_once):raise NotReady('等待 BOT 出生前分配器就绪')
             self.b.send(data['text']);self.emit('log',text='已交给游戏命令队列：'+data['text']);return
         if action=='chat':
+            if self._listener_ticket and not self.listener_current(self._listener_ticket):return
             self.b.send(chat_command(data['text'],data['team']));self.emit('log',text='喊话已交给游戏命令队列');return
         if action=='chat_timer':
             if not data['enabled']:self.chat=None;self.emit('log',text='定时喊话已停止');return
-            cmd=chat_command(data['text'],data['team']);interval=bounded_float(data['interval'],1,3600,'喊话间隔')
-            self.chat=(cmd,interval,time.monotonic()+interval,self.b.epoch);self.emit('log',text=f'定时喊话已开始，每 {interval:g} 秒一次');return
+            entries=data['entries'] if 'entries' in data else [data['text']]
+            if not entries:raise ValueError('请先输入喊话内容')
+            messages=tuple(chat_command(value,data['team']) for value in entries)
+            interval=bounded_float(data['interval'],1,3600,'喊话间隔')
+            self.chat=(messages,0,interval,time.monotonic()+interval,self.b.epoch,self._listener_ticket)
+            self.emit('log',text=f'定时喊话已开始，每 {interval:g} 秒一次');return
         if action=='mutation_read':
             state=self.b.mutation_state();self.emit('bio_state',text=f'自身当前变异次数：{state["available"]}');return
         if action=='mutation_add':
@@ -3730,7 +4186,13 @@ class Worker(threading.Thread):
             self.bio_pending=('mutation',before,time.monotonic()+1.,time.monotonic()+10.)
             self.emit('log',text='增加变异次数已交给游戏；等待读取结果');return
         if action=='machine_scan':
-            rows=self.b.machines();self.emit('machines',rows=rows);self.emit('log',text=f'发现 {len(rows)} 台变异机器');return
+            try:rows=self.b.machines()
+            except Exception:
+                self.emit('machine_scan_error',epoch=self.b.epoch)
+                raise
+            self.emit('machines',rows=rows,epoch=self.b.epoch)
+            if not data.get('quiet'):self.emit('log',text=f'发现 {len(rows)} 台变异机器')
+            return
         if action=='machine_reroll':
             if self.bio_pending:raise NotReady('上一条生化请求尚未核对完成')
             before=self.b.reroll_machine(data['key']);self.bio_pending=('machine',before,time.monotonic()+1.,time.monotonic()+10.)
@@ -3750,9 +4212,7 @@ class Worker(threading.Thread):
             if not data['keys']:raise ValueError('请先勾选玩家')
             value=bounded_int(data['value'],1 if data['field']=='hp' else 0,999999,'数值')
             if data.get('lock'):
-                self.controls.configure_value_locks(data['keys'],
-                    data['field']=='hp' or self.controls.hp is not None,
-                    data['field']=='money' or self.controls.money is not None)
+                self.controls.configure_field_lock(data['field'],data['keys'],value)
                 self.round_settings.configure(data['field'],[],None)
             done=skipped=0
             try:
@@ -3845,6 +4305,7 @@ class Worker(threading.Thread):
                     except Exception:
                         self.skin_observations.clear()
                         self.emit('skin_trace',record=dict(event='readback_unavailable'))
+                    self.zeta.step()
                     self.advance_each_round()
                     try:
                         for message in self.round_settings.step(players):self.emit('log',text=message)
@@ -3873,12 +4334,7 @@ class Worker(threading.Thread):
                     self.advance_teleports()
                     self.advance_bot_stop()
                     self.advance_ground_spawn()
-                    if self.chat:
-                        cmd,interval,due,epoch=self.chat
-                        if epoch!=self.b.epoch:self.chat=None;self.emit('reset')
-                        elif time.monotonic()>=due:
-                            try:self.b.send(cmd);self.chat=(cmd,interval,time.monotonic()+interval,epoch);self.emit('log',text='定时喊话已交给游戏命令队列')
-                            except Exception as ex:self.chat=None;self.emit('error',text='定时喊话已停止：'+str(ex));self.emit_flags()
+                    self.advance_chat_timer()
                     if self.bio_pending and time.monotonic()>=self.bio_pending[2]:
                         kind,before,_,deadline=self.bio_pending;self.bio_pending=None
                         try:
@@ -3900,8 +4356,9 @@ class Worker(threading.Thread):
                         except Exception as ex:self.emit('error',text='生化结果核对：'+str(ex))
                     self.tick_error=''
                     if time.monotonic()-self.last_ui>.4:
-                        self.emit('state',ready=True,text=f'{self.b.map_name} · {len(players)} 名玩家',players=players,epoch=self.b.epoch,pid=self.b.mem.pid,cheats=self.b.optional_cheats_value(),capabilities=self.b.capabilities,command_status={text:self.b.command_status(text) for text in self.command_watch[:128]})
+                        self.emit('state',runtime_revision=self.runtime_revision,ready=True,round_scope=self.round_scope(),text=f'{self.b.map_name} · {len(players)} 名玩家',players=players,epoch=self.b.epoch,pid=self.b.mem.pid,cheats=self.b.optional_cheats_value(),capabilities=self.b.capabilities,command_status={text:self.b.command_status(text) for text in self.command_watch[:128]})
                         self.emit_flags()
+                        self.report_round_buttons(players)
                         self.last_ui=time.monotonic()
                 except Exception as ex:
                     # A field-write error is not a new match. Preserve identity
@@ -3946,6 +4403,37 @@ import tkinter as tk
 from tkinter import ttk
 
 EN = {
+ '仅在对局内发送；定时监听在进房后自动恢复。':'Sends only in matches; the timer resumes after entering a match.',
+ '对我自动生效':'Apply to me automatically','对我所有队友自动生效':'Apply to my teammates automatically','对敌方我方自动生效':'Apply to both teams automatically',
+ '等待自动应用':'Waiting to apply automatically','已提交，等待处理':'Submitted · processing','未确认，等待下一局':'Unconfirmed · waiting for next round',
+ '本人':'Me','队友':'Teammates','双方':'Both teams','监听中':'Listening','锁定血量':'Lock HP','锁定金钱':'Lock money','搜索':'Search','命令 / 变量':'Command / variable',
+ '进房后按实际强化表应用所选等级。':'Selected levels will use the match upgrade table.',
+
+ '开启幽灵显形监听':'Watch ghost visibility','等待进入游戏':'Waiting for game',
+ '按勾选玩家':'Selected players','仅本人':'Me','我的所有队友':'My teammates','敌我双方':'Both teams',
+ '点击设置时按范围选人':'Target scope for Apply',
+ '新增条目':'Add message','上移':'Move up','下移':'Move down','删除条目':'Delete message',
+ '字符':'chars','字节':'bytes','从上到下发送，空行跳过。':'Sent from top to bottom. Empty rows are skipped.',
+ '发送指令':'Send command',
+ '新对局仅发送一次':'Once in the next match','每次对局都发送':'Every match','停用功能':'Disabled',
+ '新对局仅一次':'Next match only','每局监听中':'Watching every match',
+ '等待新对局':'Waiting for next match','本局待发送':'Click to send',
+ '立即发送':'Send now','监听中，等待进入游戏':'Listening · waiting for game',
+ '关闭中，等待处理':'Stopping · awaiting completion',
+ '界面状态刷新失败':'UI status refresh failed',
+ '已拥有该技能，请选择其他技能':'Skill already owned; choose another skill',
+ '监听中，等待进游戏':'Listening · waiting for game','已就绪，点击执行':'Ready · click to apply',
+ '监听此模式':'Watch this mode','正在监听模式':'Watching mode','已进入对应模式':'Mode detected',
+ '等待进入生化 ZETA':'Waiting for Bio ZETA','等待读取机器列表':'Waiting for machine list',
+ '机器扫描失败，可刷新重试':'Scan failed · refresh to retry',
+ '变异机器尚未就绪':'Mutation machines unavailable',
+ '等待游戏，可预设本页开关':'Waiting for game · edit preferences now',
+ '开启每局应用后，在房主对局使用这些设置':'Enable Apply every round to use these settings in hosted matches',
+ '运行中':'Running','每局监听':'Watch every round','（正在监听中）':'(Listening)',
+ '本局待发送':'Ready to send','本局已符合':'Target matched','本局已提交':'Submitted',
+ '每局都激活（监听中）':'Enable every round (listening)',
+ '停止监听':'Stop listening','仅本次发送':'Send once','正在监听中':'Listening',
+ '监听已开启':'Listening enabled','监听已停止':'Listening stopped',
  '检查更新':'Check updates',
  '幽灵显形':'Reveal ghosts','幽灵隐身':'Restore ghost stealth','暂无幽灵':'No active ghosts',
  '幽灵显形 · 运行中':'Reveal ghosts · Running','幽灵重新隐藏中':'Restoring ghost stealth',
@@ -4349,6 +4837,8 @@ class UiLanguage:
     def toggle(self):
         self.lang='en' if self.lang=='zh' else 'zh';self.refresh()
 
+EN.update({'增加技能数量上限': 'Increase skill capacity', '增加突变点数': 'Add mutation points', '指定突变一次': 'Choose next mutation once', '先选择技能并点击指定；进入 ZETA 后，下一次按原生突变键取得所选技能。': 'Choose a skill and arm it. In ZETA, your next native mutation key press selects this skill.', '指定突变已就绪，等待原生突变按键': 'Choice armed; waiting for the native mutation key', '已确认取得指定突变技能': 'Selected mutation skill confirmed', '突变点数：': 'Mutation points: ', '技能数量上限：': 'Skill capacity: '})
+EN['等待原生突变按键']='Waiting for the native mutation key'
 # END_UI_LANGUAGE
 
 # host_ui.py
@@ -4406,7 +4896,35 @@ def style_window(root):
     root.option_add('*selectBackground',BLUE);root.option_add('*selectForeground',TEXT)
     root.option_add('*TCombobox*Listbox.background',INPUT)
     root.option_add('*TCombobox*Listbox.foreground',TEXT)
+    root.option_add('*TCombobox*Listbox.font',('Microsoft YaHei UI',11))
     root.option_add('*TCombobox*Listbox.selectBackground',BLUE)
+    # Decorate only the popdown display. Values/current indices remain unchanged.
+    root.tk.eval(r'''
+        if {![llength [info commands ttk::combobox::HostOriginalConfigureListbox]]} {
+            rename ttk::combobox::ConfigureListbox ttk::combobox::HostOriginalConfigureListbox
+            proc ttk::combobox::ConfigureListbox {cb} {
+                HostOriginalConfigureListbox $cb
+                variable Values
+                set index [$cb current]
+                if {$index >= 0} {lset Values($cb) $index "[lindex [$cb cget -values] $index]  ✓"}
+                event generate $cb <<DropdownOpened>>
+            }
+            rename ttk::combobox::PlacePopdown ttk::combobox::HostOriginalPlacePopdown
+            proc ttk::combobox::PlacePopdown {cb popdown} {
+                HostOriginalPlacePopdown $cb $popdown
+                variable Values
+                set lb $popdown.f.l
+                set width [winfo width $cb]
+                foreach value $Values($cb) {
+                    set width [expr {max($width,[font measure [$lb cget -font] $value]+44)}]
+                }
+                set width [expr {min($width,[winfo screenwidth $cb]-24)}]
+                set x [expr {max(8,min([winfo rootx $cb],[winfo screenwidth $cb]-$width-8))}]
+                regexp {^[0-9]+x([0-9]+)[+-][0-9]+([+-][0-9]+)$} [wm geometry $popdown] all height y
+                wm geometry $popdown ${width}x${height}+${x}${y}
+            }
+        }
+    ''')
     s=ttk.Style(root);s.theme_use('clam')
     s.configure('.',font=('Microsoft YaHei UI',10),background=CARD,foreground=TEXT)
     s.configure('TFrame',background=BG);s.configure('Card.TFrame',background=CARD)
@@ -4429,7 +4947,19 @@ def style_window(root):
     s.map('Running.TButton',background=[('pressed','#124d3d'),('active','#217c63')])
     s.configure('TEntry',fieldbackground=INPUT,foreground=TEXT,insertcolor=TEXT,bordercolor=BORDER,lightcolor=BORDER,darkcolor=BORDER,padding=(7,5))
     s.configure('TCombobox',fieldbackground=INPUT,background='#283b50',foreground=TEXT,arrowcolor=ACCENT,bordercolor=BORDER,lightcolor=BORDER,darkcolor=BORDER,padding=(8,6),arrowsize=13)
-    s.map('TCombobox',fieldbackground=[('readonly',INPUT)],foreground=[('readonly',TEXT)],selectbackground=[('readonly',INPUT)],selectforeground=[('readonly',TEXT)])
+    # Reserve an independent arrow area; long text never shrinks the glyph.
+    combo_arrow=tk.PhotoImage(master=root,width=26,height=24)
+    combo_arrow.put('#283b50',to=(0,0,26,24))
+    for dy in range(6):combo_arrow.put('#ffffff',to=(7+dy,8+dy,19-dy,9+dy))
+    root._combo_arrow=combo_arrow
+    s.element_create('HostCombo.downarrow','image',combo_arrow,width=26,sticky='')
+    combo_layout=s.layout('TCombobox')
+    def replace_arrow(layout):
+        for i,(name,options) in enumerate(layout):
+            if name=='Combobox.downarrow':layout[i]=('HostCombo.downarrow',dict(options,sticky=''))
+            if 'children' in options:replace_arrow(options['children'])
+    replace_arrow(combo_layout);s.layout('TCombobox',combo_layout)
+    s.map('TCombobox',fieldbackground=[('readonly',INPUT)],foreground=[('disabled',TEXT),('readonly',TEXT)],selectbackground=[('readonly',INPUT)],selectforeground=[('readonly',TEXT)])
     s.configure('TCheckbutton',background=CARD,foreground=TEXT,padding=(2,6),focuscolor=CARD)
     s.map('TCheckbutton',background=[('active',CARD)],foreground=[('disabled','#627185'),('active','#ffffff')])
     s.configure('TRadiobutton',background=CARD,foreground=TEXT,indicatorbackground=INPUT,indicatorforeground=ACCENT,padding=4)
@@ -4685,6 +5215,22 @@ class HostLogArchive:
             finally:staged.unlink(missing_ok=True)
 
 
+LISTENER_ACTION_FEATURES={'cheats':'cheats','ammo':'ammo','buy':'buy','scale':'scale','command':'commands','scope_apply':None,'weapon_spawn':'weapon_spawn','chat':'chat','chat_timer':'chat',
+ 'zeta_limit':'zeta','zeta_points':'zeta','zeta_skill':'zeta',
+ 'mutation_add':'mutation','mutation_read':'mutation_read','machine_scan':'machine','machine_reroll':'machine',
+ 'heroes':'heroes','heroes_auto':'heroes','heroes_no_wait':'heroes','heroes_temple':'heroes',
+ 'heroes_custom_damage':'heroes_custom_damage','heroes_no_attack':'heroes_no_attack','heroes_upgrade':'heroes_upgrade','heroes_model':'heroes_model'}
+LISTENER_CONTINUOUS={'chat_timer','heroes_auto','heroes_no_wait','heroes_temple','heroes_custom_damage','heroes_no_attack'}
+ROLE_NAMES={'gign': {'zh': '皮埃尔', 'en': 'GIGN'}, 'sas': {'zh': '瑞恩', 'en': 'SAS'}, 'sas01': {'zh': '经典 瑞恩', 'en': 'SAS (OLD)'}, 'sas02': {'zh': '反恐将领 瑞恩', 'en': 'SAS (LE)'}, 'lisa': {'zh': '莉莎', 'en': 'Lisa'}, 'lisa01': {'zh': '莉莎(运动装)', 'en': 'Lisa (LE)'}, 'lisa02swim': {'zh': '泳池派对 莉莎', 'en': 'Lisa (SWIM)'}, 'lisa03xmas': {'zh': '胡桃夹子 莉莎', 'en': 'Lisa (XMAS)'}, 'michael': {'zh': '迈克', 'en': 'Michael'}, '707': {'zh': '707', 'en': '707'}, 'kenji': {'zh': '健治', 'en': 'Kenji'}, 'mari': {'zh': '玛丽', 'en': 'Marie'}, 'mari01': {'zh': '兔女郎玛丽', 'en': 'Marie (LE)'}, 'emma': {'zh': '艾玛', 'en': 'Emma'}, 'emma02swim': {'zh': '泳池派对 艾玛', 'en': 'Emma (SWIM)'}, 'lincoln': {'zh': '林肯', 'en': 'Lincoln'}, 'GSG': {'zh': '卢卡斯', 'en': 'GSG-09'}, 'carrie': {'zh': '凯利', 'en': 'Carrie'}, 'carrie01': {'zh': '壮志凌云 凯利', 'en': 'Carrie (LE)'}, 'choi': {'zh': '崔智云', 'en': 'Choi Ji Yoon'}, 'choi01': {'zh': '军装 崔智云', 'en': 'Choi Ji Yoon (LE)'}, 'choi02': {'zh': '女伯爵 崔智云', 'en': 'Choi Ji Yoon (S-PUNK)'}, 'helga': {'zh': '莉莉娅', 'en': 'Helga'}, 'helga01xmas': {'zh': '冰雪女王 莉莉娅', 'en': 'Helga (XMAS)'}, 'heather': {'zh': '海瑟尔', 'en': 'Heather'}, 'kwan': {'zh': '阿宽', 'en': 'Kwan'}, 'miu': {'zh': '奈奈', 'en': 'Miu'}, 'miu01': {'zh': '同级生 奈奈', 'en': 'Miu (LE)'}, 'ct_miya': {'zh': '米雅 蓝队'}, 'ct_2b': {'zh': '尤尔哈 2B'}, 'ct_marie rose': {'zh': '玛丽·萝丝'}, 'ct_st6': {'zh': '全球攻势 海豹六队'}, 'ct_miku': {'zh': '初音未來'}, 'ct_chushuang': {'zh': '初霜'}, 'ct_leimu': {'zh': '蕾姆'}, 'ct_ysbbl': {'zh': '芭芭拉'}, 'ct_keqing': {'zh': '刻晴'}, 'ct_tianyi01': {'zh': '旗袍 洛天依'}, 'ct_touhou': {'zh': '铃仙·优昙华院·因幡'}, 'ct_tifa': {'zh': '蒂法·洛克哈特'}, 'tr_raidenshogun': {'zh': '雷电将军'}, 'tr_raiden': {'zh': '雷电'}, 'tr_ghost': {'zh': '幽灵·莱利'}, 'ct_cc': {'zh': 'C·C·'}, 'ct_lelouch': {'zh': '鲁路修·兰佩路基'}, 'tr_huaji': {'zh': '滑稽人'}, 'ct_jcms': {'zh': '骇兔·旧城迷事'}, 'ct_MZBY': {'zh': '木之本樱'}, 'ct_ysbblskin': {'zh': '芭芭拉·闪耀协奏'}, 'ct_UMP45': {'zh': '少女前线·UMP45'}, 'ct_ump9': {'zh': '少女前线·UMP9'}, 'ct_slqn': {'zh': '神乐七奈'}, 'tr_smn1': {'zh': '醒目飞鹰'}, 'tr_syz': {'zh': '噶呜古拉·休闲服'}, 'tr_jiaran': {'zh': '嘉然'}, 'ct_gula': {'zh': '噶呜古拉'}, 'ct_gulaYz': {'zh': '噶呜古拉·泳装'}, 'ct_Shimakaze': {'zh': '島風'}, 'tr_amelia': {'zh': '阿米莉亚·华生'}, 'ct_nekoha': {'zh': '猫羽雫'}, 'ct_SAOTR': {'zh': '桐谷和人'}, 'ct_ejtct': {'zh': '二阶堂咲'}, 'ct_jiegeng': {'zh': '桔梗'}, 'ct_slbz': {'zh': '砂狼白子'}, 'ct_syact': {'zh': '水野爱'}, 'ct_lmly': {'zh': '蕾米莉亚·斯卡蕾特'}, 'ct_LingMeng2': {'zh': '花骑士·百可花'}, 'ct_toki': {'zh': '角楯花凛·兔女郎'}, 'ct_miyako': {'zh': '月雪都子·水着'}, 'ct_iori': {'zh': '银镜伊织'}, 'ct_iroha': {'zh': '枣·伊吕波'}, 'ct_xiaochun': {'zh': '下江小春'}, 'ct_Laoda': {'zh': '牢大'}, 'ct_hibiki': {'zh': '响'}, 'ct_molisa': {'zh': '花骑士·魔里沙'}, 'ct_rabbitholemiku': {'zh': '兔子洞·初音'}, 'ct_bh3qynyz': {'zh': '琪亚娜·月海流华'}, 'ct_sdj_lingyi': {'zh': '闪刀姬-零衣'}, 'ct_shiwu': {'zh': '凯萨·十五根号三'}, 'ct_arisu': {'zh': '天童爱丽丝'}, 'ct_maki': {'zh': '小涂真纪·野营'}, 'ct_yoshino': {'zh': '冰芽川四糸乃'}, 'ct_chise': {'zh': '和乐千世·水着'}, 'ct_kokona': {'zh': '春原心奈'}, 'ct_arona': {'zh': '阿罗娜'}, 'ct_midori': {'zh': '才羽绿'}, 'ct_furina': {'zh': '芙宁娜'}, 'ct_lingsha': {'zh': '灵砂'}, 'ct_machikane': {'zh': '诗歌剧'}, 'ct_mashu': {'zh': '麻薯'}, 'ct_nokotan': {'zh': '鹿乃子乃子'}, 'ct_lcscavenger': {'zh': '致命公司员工'}, 'ct_hsrfirefly': {'zh': '流萤'}, 'ct_hsrsilverwolf': {'zh': '银狼'}, 'ct_padoru': {'zh': '圣诞尼禄'}, 'ct_dalkotorinew': {'zh': '五河琴里'}, 'ct_acetaffy': {'zh': '永雏塔菲'}, 'arctic': {'zh': '埃尔伯', 'en': 'Arctic'}, 'leet': {'zh': '里特', 'en': 'Leet'}, 'leet01': {'zh': '经典 里特', 'en': 'Leet (OLD)'}, 'arctic01': {'zh': '北非谍影 埃尔伯', 'en': 'Arctic (LE)'}, 'mila': {'zh': '米拉', 'en': 'Mila'}, 'mila01': {'zh': '米拉(迷彩装)', 'en': 'Mila (LE)'}, 'mila02swim': {'zh': '泳池派对 米拉', 'en': 'Mila (SWIM)'}, 'mila03xmas': {'zh': '胡桃夹子 米拉', 'en': 'Mila (XMAS)'}, 'karachenko': {'zh': '舍甫琴科', 'en': 'Karachenko'}, 'ara': {'zh': '风荒', 'en': 'Ara'}, 'joe': {'zh': '乔', 'en': 'Joe'}, 'natary': {'zh': '娜塔莉', 'en': 'Natalie'}, 'natary01': {'zh': '圣诞装娜塔莉', 'en': 'Natalie (LE)'}, 'tammy': {'zh': '塔米', 'en': 'Tammy'}, 'tammy02swim': {'zh': '泳池派对 塔米', 'en': 'Tammy (SWIM)'}, 'mao': {'zh': '格伦', 'en': 'Mao'}, 'phoenix': {'zh': '尼古拉斯', 'en': 'Phoenix'}, 'viper': {'zh': '善柔', 'en': 'Viper'}, 'viper01': {'zh': '沙漠蝰蛇 善柔', 'en': 'Viper (LE)'}, 'yuri': {'zh': '安娜', 'en': 'Yuri'}, 'yuri01': {'zh': '公主裙 安娜', 'en': 'Yuri (LE)'}, 'yuri02': {'zh': '探险家 安娜', 'en': 'Yuri (S-PUNK)'}, 'white': {'zh': '维卡', 'en': 'Naomi'}, 'white01xmas': {'zh': '冰原猎手 维卡', 'en': 'Naomi (XMAS)'}, 'sonya': {'zh': '索娜', 'en': 'Sonya'}, 'hasan': {'zh': '哈桑', 'en': 'Hasan'}, 'athena': {'zh': '雅典娜', 'en': 'Athena'}, 'athena01': {'zh': '转校生 雅典娜', 'en': 'Athena (LE)'}, 'mofa': {'zh': '魔法少女奈奈'}, 'tr_miya': {'zh': '米雅 红队'}, 'tr_new_leet': {'zh': '全球攻势 里特'}, 'tr_qipao': {'zh': '上管燕'}, 'tr_haku': {'zh': '兔女郎弱音ハク'}, 'tr_san': {'zh': '桑'}, 'tr_ysht': {'zh': '胡桃'}, 'tr_klee': {'zh': '可莉'}, 'tr_fanzhou': {'zh': '反转折纸'}, 'tr_tina': {'zh': '缇娜 精英队员'}, 'tr_shiro': {'zh': '西萝'}, 'tr_cxk': {'zh': '坤坤'}, 'tr_kokoro': {'zh': '天宮心'}, 'tr_djysn': {'zh': '亚丝娜'}, 'tr_alice': {'zh': '爱丽丝·滋贝鲁库'}, 'ct_yslh': {'zh': '神里绫华'}, 'ct_KL': {'zh': '百地希留耶·凯露'}, 'ct_chocola': {'zh': '貓娘樂園·巧克力'}, 'ct_smnct': {'zh': '目白麦昆'}, 'tr_vanilla': {'zh': '貓娘樂園·香子兰'}, 'tr_symx': {'zh': '圣园弥香'}, 'ct_jsnct': {'zh': '源樱'}, 'tr_Aqua': {'zh': '凑阿库娅'}, 'tr_beidao': {'zh': '北条沙都子'}, 'tr_jsntr': {'zh': '绀野纯子'}, 'tr_ludao': {'zh': '鹿岛'}, 'tr_dfqln': {'zh': '琪露諾'}, 'tr_GameBai': {'zh': '白'}, 'tr_Hayase': {'zh': '早濑优香'}, 'tr_xiana': {'zh': '夏娜'}, 'tr_xxxem': {'zh': '小惡魔'}, 'tr_fldl': {'zh': '芙兰朵露·斯卡蕾特'}, 'tr_xzhys': {'zh': '星之海·弱音'}, 'tr_LingMeng': {'zh': '花骑士·幼灵梦'}, 'tr_asuna': {'zh': '一之瀬明日奈·兔女郎'}, 'tr_karin': {'zh': '飞鸟马时·兔女郎'}, 'tr_hanako': {'zh': '浦和花子·水着'}, 'tr_bzx': {'zh': '白洲梓'}, 'tr_Hifumi': {'zh': '阿慈谷日步美'}, 'tr_hina': {'zh': '空崎阳奈'}, 'tr_yamakaze': {'zh': '山風'}, 'tr_kizunaai': {'zh': '绊爱'}, 'tr_kotori': {'zh': '五河琴里·灵装'}, 'tr_zoey': {'zh': '闪刀姬-露世'}, 'tr_momoi': {'zh': '才羽桃井'}, 'tr_iochi_mari': {'zh': '伊落玛丽·体操服'}, 'tr_hanaokayuzu': {'zh': '花冈柚子'}, 'tr_hoshino_swim': {'zh': '小鸟游星野·水着'}, 'tr_plana': {'zh': '普拉娜'}, 'tr_kisaki': {'zh': '龙华妃咲'}, 'tr_BH3alxyyz': {'zh': '爱莉希雅·夏日妖精'}, 'tr_manhattan_cafe': {'zh': '曼城茶座'}, 'tr_nahida': {'zh': '纳西妲'}, 'tr_rusk': {'zh': 'Rusk-小蓝'}, 'tr_yae_miko': {'zh': '八重神子'}, 'tr_hsrsparkle': {'zh': '花火'}, 'tr_nikkedorothy': {'zh': '桃乐丝'}, 'tr_cc_vrchat': {'zh': 'C·C·飞行装'}}
+ZETA_SKILLS=[{'id': 2, 'code': 'zz_vaccine_smoke', 'zh': '疫苗弹', 'en': 'Vaccine Smoke', 'phase': 3, 'rva': '0x290110'}, {'id': 3, 'code': 'zz_initial_money_support', 'zh': '财迷', 'en': 'Moneyworm', 'phase': 3, 'rva': '0x2904e0'}, {'id': 4, 'code': 'zz_not_have_primary_fortify_melee', 'zh': '格斗大师', 'en': 'Melee Powerup', 'phase': 3, 'rva': '0x290890'}, {'id': 5, 'code': 'zz_increase_bullet', 'zh': '弹药繁殖', 'en': 'Increased Ammo', 'phase': 3, 'rva': '0x290c20'}, {'id': 6, 'code': 'zz_no_reload', 'zh': '快速装填', 'en': 'Fast Reloading', 'phase': 3, 'rva': '0x291120'}, {'id': 7, 'code': 'zz_give_hegrenade', 'zh': '再生手榴弹', 'en': 'HE Grenade', 'phase': 3, 'rva': '0x28cdb0'}, {'id': 8, 'code': 'zz_speed_up_after_grenade', 'zh': '精锐掷弹手', 'en': 'Speed up after Grenading', 'phase': 3, 'rva': '0x2914f0'}, {'id': 9, 'code': 'zz_fire_circle', 'zh': '环形力场', 'en': 'Fire Circle', 'phase': 0, 'rva': '0x295520'}, {'id': 10, 'code': 'zz_explosion_radius', 'zh': '狂暴弹', 'en': 'Extra Explosion Radius', 'phase': 3, 'rva': '0x2917d0'}, {'id': 12, 'code': 'zz_reload_invisible', 'zh': '透明装填', 'en': 'Stealth Reloading', 'phase': 3, 'rva': '0x294d60'}, {'id': 13, 'code': 'zz_fortify_hegrenade', 'zh': '榴弹打击', 'en': 'Nuclear Bomb', 'phase': 3, 'rva': '0x28d260'}, {'id': 14, 'code': 'zz_critical_hit', 'zh': '致命一击', 'en': 'Critical Hit', 'phase': 3, 'rva': '0x291f10'}, {'id': 17, 'code': 'zz_transform_hide_prop', 'zh': '物体变身', 'en': 'Turning into Prop', 'phase': 0, 'rva': '0x294530'}, {'id': 18, 'code': 'zz_fortify_attack', 'zh': '钢铁子弹', 'en': 'Increased Damage', 'phase': 3, 'rva': '0x28ca90'}, {'id': 19, 'code': 'zz_multiply_speed', 'zh': '猎豹', 'en': 'Increased Speed', 'phase': 0, 'rva': '0x28d060'}, {'id': 20, 'code': 'zz_fortify_jump_height', 'zh': '袋鼠', 'en': 'Increased Jump', 'phase': 3, 'rva': '0x28c7c0'}, {'id': 21, 'code': 'zz_not_attacked_recover_hp', 'zh': '生命恢复', 'en': 'HP Regeneration', 'phase': 0, 'rva': '0x28d520'}, {'id': 24, 'code': 'zz_small_body', 'zh': '小型化', 'en': 'Miniaturization', 'phase': 3, 'rva': '0x28dfa0'}, {'id': 25, 'code': 'zz_fill_bullet_while_shooting', 'zh': '生产', 'en': 'Extra Reloading Bullets', 'phase': 3, 'rva': '0x292690'}, {'id': 26, 'code': 'zz_focus_zombie_target', 'zh': '感知', 'en': 'Zombie Marking', 'phase': 3, 'rva': '0x292d50'}, {'id': 27, 'code': 'zz_focus_human_target', 'zh': '狩猎', 'en': 'Human Marking', 'phase': 2, 'rva': '0x293240'}, {'id': 28, 'code': 'zz_air_jump', 'zh': '2段跳', 'en': 'Double Jump', 'phase': 2, 'rva': '0x28c500'}, {'id': 29, 'code': 'zz_multiple_hegrenade', 'zh': '连发弹', 'en': 'Extra Grenading', 'phase': 3, 'rva': '0x293f30'}, {'id': 30, 'code': 'zz_bullet_explosion', 'zh': '爆炸子弹', 'en': 'Explosive Bullets', 'phase': 3, 'rva': '0x295e00'}, {'id': 31, 'code': 'zz_summon_zombie_dog', 'zh': '生产僵尸犬', 'en': 'Zombie Dog Summoner', 'phase': 2, 'rva': '0x2939f0'}, {'id': 32, 'code': 'zz_ignore_knockback', 'zh': '坚挺', 'en': 'Knockback Resistance', 'phase': 2, 'rva': '0x296ab0'}, {'id': 33, 'code': 'zz_friend_attacked_recover_hp', 'zh': '吸收病毒', 'en': 'One Flesh', 'phase': 2, 'rva': '0x294240'}, {'id': 34, 'code': 'zz_fortify_health', 'zh': '生命增加', 'en': 'Increased Health', 'phase': 0, 'rva': '0x291a90'}, {'id': 35, 'code': 'zz_infect_recover_hp', 'zh': '吸血鬼', 'en': 'HP from Infection', 'phase': 2, 'rva': '0x28fcd0'}, {'id': 36, 'code': 'zz_touch_infect', 'zh': '触碰感染', 'en': 'Contact Infection', 'phase': 2, 'rva': '0x291d20'}, {'id': 37, 'code': 'zz_melee_explosion', 'zh': '范围感染', 'en': 'Chain Infection', 'phase': 2, 'rva': '0x296100'}, {'id': 38, 'code': 'zz_throw_zombie_projectile', 'zh': '生化炸弹', 'en': 'Biomedical bomb', 'phase': 2, 'rva': '0x296880'}, {'id': 39, 'code': 'zz_attacked_smoke', 'zh': '臭鼬', 'en': 'Skunk', 'phase': 2, 'rva': '0x2936e0'}, {'id': 40, 'code': 'zz_fortify_armor', 'zh': '钢铁盔甲', 'en': 'Steel Armor', 'phase': 2, 'rva': '0x292950'}, {'id': 42, 'code': 'zz_sniper_laser', 'zh': '镭射激光', 'en': 'Sniper Laser', 'phase': 3, 'rva': '0x2971f0'}, {'id': 43, 'code': 'zz_sniper_zero_spread', 'zh': '神射手', 'en': 'Accurate Sniper', 'phase': 3, 'rva': '0x297b50'}, {'id': 44, 'code': 'zz_sniper_ignite', 'zh': '燃烧子弹', 'en': 'Igniting Sniper', 'phase': 3, 'rva': '0x297e10'}, {'id': 45, 'code': 'zz_big_body', 'zh': '猛犸象', 'en': 'Rhino', 'phase': 2, 'rva': '0x298110'}, {'id': 46, 'code': 'zz_speed_up_ducking', 'zh': '鸭子步', 'en': 'Speed up Ducking', 'phase': 2, 'rva': '0x2985c0'}, {'id': 47, 'code': 'zz_frozen_landing', 'zh': '冷气释放', 'en': 'Frozen Landing', 'phase': 3, 'rva': '0x298800'}, {'id': 48, 'code': 'zz_change_shot', 'zh': '切换射击', 'en': 'Switch Shot', 'phase': 3, 'rva': '0x298f30'}, {'id': 49, 'code': 'zz_zombie_helmet', 'zh': '铁头功', 'en': 'Steel Helmet', 'phase': 2, 'rva': '0x299380'}, {'id': 50, 'code': 'zz_respawn', 'zh': '他们回来了', 'en': 'Respawn', 'phase': 2, 'rva': '0x299660'}, {'id': 51, 'code': 'zz_chain_lightning', 'zh': '连锁闪电', 'en': 'Chain Lightning', 'phase': 3, 'rva': '0x299830'}, {'id': 53, 'code': 'zz_predict_zombie', 'zh': '第六感', 'en': 'Sixth Sense', 'phase': 3, 'rva': '0x29af40'}, {'id': 54, 'code': 'zz_transform_max_zombie', 'zh': '觉醒：汉克', 'en': 'Awakening: Heavy Zombie', 'phase': 2, 'rva': '0x29b1e0'}, {'id': 55, 'code': 'zz_transform_light_zombie', 'zh': '觉醒：崔茜', 'en': 'Awakening: Light Zombie', 'phase': 2, 'rva': '0x29bce0'}, {'id': 56, 'code': 'zz_get_exp', 'zh': '无限变异', 'en': 'Infinite Mutation', 'phase': 0, 'rva': '0x29c620'}, {'id': 57, 'code': 'zz_always_buy', 'zh': '口袋商店', 'en': 'Pocket Store', 'phase': 3, 'rva': '0x29c830'}, {'id': 58, 'code': 'zz_improve_penetration', 'zh': '贯通弹', 'en': 'Bullet Penetration', 'phase': 3, 'rva': '0x29c9f0'}, {'id': 61, 'code': 'zz_kennedy', 'zh': '王牌特工', 'en': 'Pistols Enhancement', 'phase': 3, 'rva': '0x29d670'}, {'id': 64, 'code': 'zz_icarus', 'zh': '伊卡洛斯', 'en': 'Wings', 'phase': 0, 'rva': '0x29de30'}, {'id': 62, 'code': 'zz_anatomist', 'zh': '屠杀本能', 'en': 'Anatomist', 'phase': 3, 'rva': '0x29ea70'}, {'id': 65, 'code': 'zz_ballantines', 'zh': '干扰装置', 'en': 'Generator', 'phase': 3, 'rva': '0x29d300'}, {'id': 63, 'code': 'zz_redfield', 'zh': '生存意志', 'en': 'Personal Shield', 'phase': 3, 'rva': '0x29f980'}, {'id': 66, 'code': 'zz_fire_salamander', 'zh': '烛龙之怒', 'en': 'Fire Salamander', 'phase': 3, 'rva': '0x2a0ae0'}, {'id': 23, 'code': 'zz_antiair', 'zh': '炮弹拦截', 'en': 'Bomb Interception', 'phase': 2, 'rva': '0x2a1270'}, {'id': 52, 'code': 'zz_rapidmutation', 'zh': '不稳定变异', 'en': 'Unstable Mutation', 'phase': 0, 'rva': '0x29abd0'}, {'id': 82, 'code': 'zz_assault', 'zh': '加速突击', 'en': 'Rusher', 'phase': 3, 'rva': '0x2a2970'}, {'id': 83, 'code': 'zz_constructor', 'zh': '建筑师', 'en': 'Constructor', 'phase': 3, 'rva': '0x28ebb0'}, {'id': 77, 'code': 'zz_dominance', 'zh': '尸王传承', 'en': 'Robust Genes', 'phase': 0, 'rva': '0x28e2b0'}, {'id': 78, 'code': 'zz_dash', 'zh': '瞬步', 'en': 'Instant Acceleration', 'phase': 2, 'rva': '0x28e450'}, {'id': 79, 'code': 'zz_blackhole', 'zh': '黑洞', 'en': 'Black Hole', 'phase': 2, 'rva': '0x28e7e0'}, {'id': 85, 'code': 'zz_stickypool', 'zh': '熔炎沼泽', 'en': 'Sticky Pool', 'phase': 3, 'rva': '0x2a3b10'}, {'id': 86, 'code': 'zz_overcharge', 'zh': '过载', 'en': 'Overcharge', 'phase': 3, 'rva': '0x28edb0'}, {'id': 89, 'code': 'zz_phoenix', 'zh': '火翎', 'en': 'Phoenix', 'phase': 3, 'rva': '0x2a51d0'}, {'id': 90, 'code': 'zz_execution', 'zh': '罪恶终结', 'en': 'Executioner', 'phase': 3, 'rva': '0x2a5830'}, {'id': 92, 'code': 'zz_heatup', 'zh': '蒸汽暴走', 'en': 'Heat-up', 'phase': 3, 'rva': '0x2a6400'}, {'id': 93, 'code': 'zz_energyball', 'zh': '能量弹珠', 'en': 'Energy Ball', 'phase': 3, 'rva': '0x2a4090'}]
+PLAYER_SCOPES={'selected':'按勾选玩家','self':'对我自动生效','team':'对我所有队友自动生效','both':'对敌方我方自动生效'}
+ROUND_FEATURE_KEYS = ('cheats','ammo','buy','scale')
+ROUND_COMMAND_GROUPS = {
+    'bot_stop 1':'bot_stop', 'bot_stop 0':'bot_stop', 'jointeam 1':'jointeam',
+    'mp_friendlyfire 1':'mp_friendlyfire','mp_friendlyfire 0':'mp_friendlyfire',
+    'bot_chatter off':'bot_chatter','bot_knives_only':'bot_weapons','bot_all_weapons':'bot_weapons',
+}
+
 class App:
     def __init__(self,root,path,settings=None,start_worker=True):
         self.root=root;root.withdraw();root.configure(bg=BG);self.updater=None
@@ -4701,6 +5247,24 @@ class App:
         self.feature_preferences=dict(prefs) if isinstance(prefs,dict) else {}
         self.capabilities={};self.command_states={};self.feature_widgets=[];self.game_directory=self.settings.get('game_directory','')
         self.ready=False;self.epoch=-1;self.players={};self.checked=set();self.custom=[];self.pages={};self.nav={};self.closing=False;self.logs=[];self.last_cheats=False;self.needs_admin=False
+        self.listeners=ListenerScheduler();self.wait_ids={};self.value_buttons={};self.lock_buttons={}
+        self.runtime_revision=0;self._capturing_wait=None;self._captured_request=None
+        self.wait_controls={}
+        self.waiting_controls={}
+        self.mode_watches=set()
+        self.mode_buttons={}
+        self.zeta_scan_identity=None
+        self.zeta_scan_done=set()
+        self.player_scopes=self.read_player_scopes(self.settings)
+        self.scope_entries={}
+        self.round_buttons={}
+        self.round_enabled=set()
+        self.round_once=set()
+        self.round_skip={};self.round_barriers={};self.round_session=None;self.round_scope=None
+        self.round_sent=set()
+        self.round_view=None
+        self.round_matched=set()
+        self.round_snapshot_ready=False
         self._teleport_sent=None
         self.vars={};self.current_page='players';self.filter_job=None;self.state_epoch=None;self.invulnerable_targets=set();self.ghost_targets=set()
         self.ghost_running=self.ghost_restoring=False;self.skin_window=None;self.skin_view=0
@@ -4709,6 +5273,7 @@ class App:
         self.skin_position=self.valid_skin_position(self.settings.get('skin_dialog_position'))
         self.auto_connect=bool(start_worker);self.fit_job=None;self.fitting_window=False
         root.title(TITLE);style_window(root);self.language=UiLanguage(root)
+        root.option_add('*Menu.font',('Microsoft YaHei UI',11));root.option_add('*Menu.foreground','#ffffff');root.option_add('*Menu.disabledForeground','#ffffff')
         width=min(880,max(760,root.winfo_screenwidth()-80));height=min(730,max(620,root.winfo_screenheight()-100))
         root.geometry(f'{width}x{height}+{max(0,(root.winfo_screenwidth()-width)//2)}+{max(0,(root.winfo_screenheight()-height)//2)}')
         root.minsize(min(800,width),min(620,height))
@@ -4720,11 +5285,25 @@ class App:
             self.worker.round_teleports.configure(self.teleport_preferences())
             self.worker.configure_host_watch(self.host_preferences())
             self._teleport_sent=self.teleport_preferences()
+        self.update_heroes_levels([])
+        self.restore_scope_preferences(self.settings)
+        self.load_round_buttons(self.settings)
+        self.load_feature_listeners(self.settings)
+        self.saved_settings=self.collect_settings()
+        saved_jobs=self.settings.get('feature_listeners',[])
+        if isinstance(saved_jobs,list):
+            def chat_jobs(jobs):
+                return [j for j in jobs if isinstance(j,dict) and j.get('action') in ('chat','chat_timer')]
+            if chat_jobs(saved_jobs)!=chat_jobs(self.saved_settings['feature_listeners']):
+                self.saved_settings=None
+                self.schedule_save()
         self.apply_capabilities();self.show_page('players');root.protocol('WM_DELETE_WINDOW',self.close)
         self.language.capture(root);self.language.callbacks.append(self.refresh_language);self.language.refresh()
         root.bind('<Configure>',self.on_window_configure,add='+');self.queue_window_fit()
         root.report_callback_exception=self.callback_error
         root.bind('<Control-s>',lambda _:self.save());root.bind('<F8>',lambda _:self.stop())
+        # The popdown Listbox has separate bindings. Only remove the closed selector's value-changing handler.
+        root.tk.call('bind','TCombobox','<MouseWheel>','')
         root.bind_all('<MouseWheel>',self.mousewheel,add='+')
         # Keep the native Listbox wheel bindings. A ComboboxListbox handler
         # returning 'break' runs first and would swallow scrolling entirely.
@@ -4802,7 +5381,20 @@ class App:
             relaunch_admin(self.path,self.game_directory)
         except Exception as ex:self.log(str(ex),True);return False
         self.log('管理员窗口已启动，将自动重新连接游戏。');self.close();return True
-    def feature_control(self,widget,key,command_text=None):
+    def feature_control(self,widget,key,command_text=None,listener_id=None):
+        if key in ('zeta','weapon_spawn','mutation','mutation_read','machine','heroes','heroes_upgrade','heroes_model',
+                   'heroes_custom_damage','heroes_no_attack','chat') and not command_text and str(widget.cget('text'))!='玩家模型切换':
+            title=str(widget.cget('text'))
+            callback=str(widget.cget('command'))
+            self.wait_controls[widget]=(key,title,callback)
+            ident='feature:'+key+':'+(listener_id or title)
+            if ident in self.wait_ids.values():raise ValueError('Duplicate listener control: '+ident)
+            self.wait_ids[widget]=ident
+            widget._ui_literal=True
+            widget._listener_max_width=280
+            if isinstance(widget,ttk.Button) and not widget.cget('width'):widget.configure(width=22)
+            widget.bind('<Configure>',lambda e,w=widget:self.wrap_listener_button(w),add='+')
+            widget.configure(command=lambda w=widget:self.click_wait_control(w))
         self.feature_widgets.append((widget,key,command_text))
         widget.state(['disabled'])
         widget.bind('<Enter>',lambda _,w=widget:self.hint.configure(text=getattr(w,'unavailable_reason','') or '点击执行：'+str(w.cget('text')),fg=MUTED))
@@ -4815,18 +5407,37 @@ class App:
             if getter:
                 text=getter();watch.append(text)
                 status=self.command_states.get(text,{'available':False,'reason':'等待验证当前指令'}) if status['available'] else status
-            enabled=self.ready and status['available'];widget.state(['!disabled'] if enabled else ['disabled'])
+            preset=not self.ready and key in ROUND_FEATURE_KEYS or key in ('hp','money') or widget is getattr(self,'heroes_model_button',None)
+            enabled=preset or (widget in self.wait_controls) or (self.ready and status['available']);widget.state(['!disabled'] if enabled else ['disabled'])
             widget.unavailable_reason='' if enabled else str(widget.cget('text'))+'：'+status.get('reason','当前不可用')
         self.feature_widgets=live
         for key in ('hp','money','ammo','scale','buy','chat','invulnerable'):
-            if not self.ready or not self.capabilities.get(key,{}).get('available',False):self.vars[key].set(False)
+            if not self.ready and key in ROUND_FEATURE_KEYS:
+                value=bool(self.feature_preferences.get(key))
+            elif not self.ready or not self.capabilities.get(key,{}).get('available',False):
+                value=False
+            else:
+                continue
+            if self.vars[key].get()!=value:self.vars[key].set(value)
+        if not self.ready and self.vars['cheats'].get()!=self.cheats_desired:
+            self.vars['cheats'].set(self.cheats_desired)
+        if getattr(self,'_feature_ready_label',None)!=self.ready:
+            self._feature_ready_label=self.ready
+            self.feature_mode_note.configure(text='状态以游戏实值为准' if self.ready else '等待游戏，可预设本页开关')
+        self.refresh_round_buttons()
+        self.refresh_mode_controls()
         if hasattr(self,'heroes_level_boxes'):
-            enabled=self.ready and bool(self.heroes_level_rows) and self.capabilities.get('heroes_upgrade',{}).get('available',False)
+            enabled=True
             for box in self.heroes_level_boxes.values():box.state(['!disabled','readonly'] if enabled else ['disabled'])
         if hasattr(self,'heroes_model_widgets'):
             for widgets in self.heroes_model_widgets.values():widgets[-1].state(['!disabled','readonly'] if self.ready and self.capabilities.get('heroes_model',{}).get('available',False) else ['disabled'])
-        if self.worker:self.worker.command_watch=list(dict.fromkeys(watch))
+        if self.worker:
+            armed=tuple(dict.fromkeys(self.round_buttons[k][3]().strip() for k in self.round_enabled))
+            self.worker.round_button_names=armed
+            quick=(get_command().strip() for _,_,_,get_command in self.round_buttons.values())
+            self.worker.command_watch=list(dict.fromkeys((*armed,*watch,*quick)))
         if hasattr(self,'player_actions'):self.update_player_actions()
+        self.refresh_scope_buttons()
     def strvar(self,key,default):
         value=self.settings.get(key,default)
         var=tk.StringVar(value=str(value));self.vars[key]=var;return var
@@ -4841,7 +5452,13 @@ class App:
         return inside
     def build_shell(self):
         header=tk.Frame(self.root,bg=BG);header.pack(fill='x',padx=14,pady=(12,10))
-        label(header,'CSO2 房主工具',size=15,bg=BG).pack(side='left')
+        self.header_title=label(header,'CSO2 房主工具',size=15,bg=BG)
+        self.header_title.grid(row=0,column=0,sticky='w')
+        self.header_controls=tk.Frame(header,bg=BG)
+        self.header_controls.grid(row=0,column=1,sticky='e')
+        header.columnconfigure(0,weight=1)
+        header.bind('<Configure>',lambda e:self.layout_header(e.width))
+        header=self.header_controls
         self.connect_button=ttk.Button(header,text='连接游戏',style='Accent.TButton',command=self.connect_game);self.connect_button.pack(side='right',padx=(7,0))
         ttk.Button(header,text='停止全部',command=self.stop).pack(side='right',padx=(7,0))
         self.defaults_button=ttk.Button(header,text='恢复默认值',command=self.restore_defaults);self.defaults_button.pack(side='right',padx=(7,0))
@@ -4891,12 +5508,15 @@ class App:
         self.boolvar('invulnerable');self.boolvar('invulnerable_mode')
         invulnerability_row=tk.Frame(values,bg=CARD);invulnerability_row.pack(fill='x',pady=(0,7))
         self.invulnerable_button=ttk.Button(invulnerability_row,text='无敌模式',width=24,command=self.switch_invulnerability)
+        self.invulnerable_button._ui_literal=True
+        self.invulnerable_button.bind('<Configure>',lambda e:self.wrap_listener_button(self.invulnerable_button))
         self.invulnerable_button.grid(row=0,column=0,sticky='w')
         self.vars['invulnerable_auto']=tk.BooleanVar(value=bool(self.settings.get('invulnerable_auto',True)))
         self.invulnerable_menu=tk.Menu(self.root,tearoff=False,bg=CARD,fg=TEXT,activebackground=BLUE,activeforeground=TEXT)
-        self.invulnerable_menu.add_checkbutton(label='每局自动应用',variable=self.vars['invulnerable_auto'],command=self.change_invulnerability_auto)
+        self.invulnerable_menu.add_command(label='每局自动应用',command=lambda:(self.vars['invulnerable_auto'].set(not self.vars['invulnerable_auto'].get()),self.change_invulnerability_auto()))
         self.invulnerable_menu.add_separator()
         self.invulnerable_menu.add_command(label='解除已记住对象的无敌',command=self.clear_invulnerability)
+        self.add_scope_menu(self.invulnerable_menu,'invulnerable')
         self.invulnerable_arrow=ttk.Button(invulnerability_row,text='▾',width=2,style='Small.TButton',command=self.open_invulnerability_menu)
         self.invulnerable_arrow.grid(row=0,column=1,sticky='w',padx=(3,0))
         self.invulnerable_note=label(invulnerability_row,'点击应用并记住对象；重新勾选不改变名单。',True,9,wraplength=440,justify='left')
@@ -4917,46 +5537,80 @@ class App:
                 button.configure(style='Teleport.Small.TButton');button.pack_configure(fill='both')
                 menu=tk.Menu(self.root,tearoff=False,bg=CARD,fg=TEXT,activebackground=BLUE,activeforeground=TEXT)
                 menu.add_command(label=self.language.t('立即传送一次'),command=lambda a=action:self.player_action(a))
-                menu.add_checkbutton(label=self.language.t('每个新对局执行一次'),variable=self.teleport_modes[action],command=lambda a=action:self.change_teleport_mode(a))
+                menu.add_command(label=self.language.t('每个新对局执行一次'),command=lambda a=action:(self.teleport_modes[a].set(not self.teleport_modes[a].get()),self.change_teleport_mode(a)))
                 arrow=ttk.Button(cell,text='▾',width=2,style='TeleportArrow.Small.TButton',command=lambda a=action:self.open_teleport_menu(a))
-                arrow.pack(side='right',fill='y',padx=(2,0));self.teleport_menus[action]=menu;self.teleport_arrows[action]=arrow
+                arrow.pack(side='right',before=button,padx=(2,0));self.teleport_menus[action]=menu;self.teleport_arrows[action]=arrow
             if action=='ghost':
                 self.ghost_arrow=ttk.Button(cell,text='▾',width=2,style='Small.TButton',command=self.open_ghost_menu)
-                self.ghost_arrow.pack(side='left',padx=(2,0))
+                self.ghost_arrow.pack(side='right',before=button,padx=(2,0))
         self.skin_button=ttk.Button(actions,text='指定BOT SKIN 模型',style='Small.TButton',command=self.open_bot_skins)
         self.skin_button.grid(row=4,column=0,columnspan=2,sticky='ew',padx=2,pady=2)
         for col in range(2):actions.columnconfigure(col,weight=1)
         self.round_menus={};self.action_modes={};self.mode_checks={}
         for key,title,default in [('hp','血量',9999),('money','金钱',99999)]:
             row=tk.Frame(values,bg=CARD);row.pack(fill='x',pady=4)
-            label(row,title,width=5).pack(side='left')
-            ttk.Entry(row,textvariable=self.strvar(key+'_value',default),width=10).pack(side='left',padx=(5,10))
-            self.feature_control(ttk.Button(row,text='设置'+title,style='Small.TButton',command=lambda k=key:self.apply_setting(k)),key).pack(side='left')
+            label(row,title,width=5).grid(row=0,column=0,sticky='w')
+            ttk.Entry(row,textvariable=self.strvar(key+'_value',default),width=10).grid(row=0,column=1,sticky='w',padx=(5,10))
+            self.value_buttons[key]=self.feature_control(ttk.Button(row,text='设置'+title,width=20,style='Small.TButton',command=lambda k=key:self.apply_setting(k)),key)
+            self.value_buttons[key].grid(row=0,column=2,sticky='ew')
+            self.value_buttons[key]._ui_literal=True
+            self.value_buttons[key].bind('<Configure>',lambda e,w=self.value_buttons[key]:self.wrap_listener_button(w))
             menu=tk.Menu(self.root,tearoff=False,bg=CARD,fg=TEXT,activebackground=BLUE,activeforeground=TEXT)
             mode=self.settings.get(key+'_mode','once')
             self.action_modes[key]=mode if mode in ('once','round') else 'once'
             self.mode_checks[key]={value:tk.BooleanVar(value=self.action_modes[key]==value) for value in ('once','round')}
             self.boolvar('round_'+key)  # Active worker job, separate from the chosen UI mode.
-            menu.add_checkbutton(label='立即设置',variable=self.mode_checks[key]['once'],command=lambda k=key:self.set_action_mode(k,'once'))
-            menu.add_checkbutton(label='每局自动设置',variable=self.mode_checks[key]['round'],command=lambda k=key:self.set_action_mode(k,'round'))
+            menu.add_command(label='立即设置',command=lambda k=key:self.set_action_mode(k,'once'))
+            menu.add_command(label='每局自动设置',command=lambda k=key:self.set_action_mode(k,'round'))
             self.round_menus[key]=menu
-            arrow=ttk.Button(row,text='▾',width=2,style='Small.TButton');arrow.pack(side='left',padx=(1,0))
+            self.add_scope_menu(menu,key)
+            arrow=ttk.Button(row,text='▾',width=2,style='Small.TButton');arrow.grid(row=0,column=3,padx=(1,0))
             arrow.configure(command=lambda m=menu,w=arrow:self.open_action_menu(m,w))
             self.boolvar(key)  # Runtime acknowledgement stays separate from UI intent.
-            ttk.Checkbutton(row,text='锁定所选玩家'+title,variable=self.boolvar(key+'_lock_mode'),command=lambda k=key:self.select_lock_mode(k)).pack(side='left',padx=(8,0))
+            lock=ttk.Checkbutton(row,text='锁定所选玩家'+title,variable=self.boolvar(key+'_lock_mode'),command=lambda k=key:self.select_lock_mode(k))
+            lock.grid(row=1,column=1,columnspan=3,sticky='w',pady=(3,0));self.lock_buttons[key]=lock;lock._ui_literal=True
         self.player_tree.bind('<<TreeviewSelect>>',lambda _:self.update_player_actions())
         self.update_player_actions()
+    @staticmethod
+    def read_player_scopes(settings):
+        saved=settings.get('player_scopes',{})
+        if not isinstance(saved,dict):saved={}
+        return {key:saved.get(key) if isinstance(saved.get(key),str) and saved[key] in PLAYER_SCOPES else 'selected' for key in ('hp','money','invulnerable')}
+    def add_scope_menu(self,menu,key):
+        menu.configure(bg='#202e3c',fg='#f5f8fb',activebackground='#246452',activeforeground='white',font=('Microsoft YaHei UI',11))
+        menu.add_separator()
+        self.scope_entries[key]=(menu,{})
+        for scope,title in PLAYER_SCOPES.items():
+            menu.add_command(label=title,command=lambda k=key,v=scope:self.set_player_scope(k,v))
+            self.scope_entries[key][1][scope]=menu.index('end')
+    def set_player_scope(self,key,scope):
+        if key not in self.player_scopes or scope not in PLAYER_SCOPES:return
+        self.player_scopes[key]=scope
+        if scope=='selected':self.arm_listener('scope:'+key,'scope_apply',dict(field=key,value=1,lock=False))
+        else:self.update_scope_listener(key)
+        self.refresh_scope_menus();self.refresh_scope_buttons();self.refresh_invulnerability_ui()
+        self.schedule_save()
+    def refresh_scope_menus(self):
+        for key,(menu,indices) in self.scope_entries.items():
+            for scope,index in indices.items():
+                mark='  ✓' if self.player_scopes[key]==scope else ''
+                menu.entryconfigure(index,label=self.language.t(PLAYER_SCOPES[scope])+mark)
     def open_action_menu(self,menu,widget):
-        menu.entryconfigure(0,label=self.language.t('立即设置'));menu.entryconfigure(1,label=self.language.t('每局自动设置'))
+        self.refresh_scope_menus()
+        field=next(k for k,m in self.round_menus.items() if m is menu)
+        menu.entryconfigure(0,label=self.language.t('立即设置')+('  ✓' if self.action_modes[field]=='once' else ''))
+        menu.entryconfigure(1,label=self.language.t('每局自动设置')+('  ✓' if self.action_modes[field]=='round' else ''))
         try:menu.tk_popup(widget.winfo_rootx(),widget.winfo_rooty()+widget.winfo_height())
         finally:menu.grab_release()
     def switch_invulnerability(self):
+        if self.player_scopes['invulnerable']!='selected':self.update_scope_listener('invulnerable');return True
         # One explicit click snapshots the current objects. It is not a toggle.
         self.vars['invulnerable_mode'].set(True)
         return self.toggle_invulnerability()
     def open_invulnerability_menu(self):
+        self.refresh_scope_menus()
         menu=self.invulnerable_menu;widget=self.invulnerable_arrow
-        menu.entryconfigure(0,label=self.language.t('每局自动应用'))
+        menu.entryconfigure(0,label=self.language.t('每局自动应用')+('  ✓' if self.vars['invulnerable_auto'].get() else ''))
         menu.entryconfigure(2,label=self.language.t('解除已记住对象的无敌'))
         try:menu.tk_popup(widget.winfo_rootx(),widget.winfo_rooty()+widget.winfo_height())
         finally:menu.grab_release()
@@ -4966,12 +5620,17 @@ class App:
             return self.request('invulnerability_auto',enabled=self.vars['invulnerable_auto'].get())
         return True
     def clear_invulnerability(self):
+        self.player_scopes['invulnerable']='selected';self.cancel_listener('scope:invulnerable');self.schedule_save()
         if self.ready and (self.invulnerable_targets or self.vars['invulnerable'].get()):
             if not self.request('invulnerability',keys=[],auto=self.vars['invulnerable_auto'].get()):return False
         self.invulnerable_targets.clear();self.vars['invulnerable_mode'].set(False)
         self.refresh_invulnerability_ui();return True
     def refresh_invulnerability_ui(self):
-        self.invulnerable_button.configure(text='无敌模式',style='TButton')
+        self.invulnerable_button.state(['!disabled']);self.invulnerable_arrow.state(['!disabled'])
+        if self.player_scopes['invulnerable']!='selected':
+            self.set_listener_caption(self.invulnerable_button,self.language.t('无敌模式')+'\n'+self.language.t('运行中' if self.ready else '监听中，等待进入游戏'),'Running.TButton')
+            self.invulnerable_note.configure(text=self.language.t(PLAYER_SCOPES[self.player_scopes['invulnerable']]),fg=TEXT);return
+        self.set_listener_caption(self.invulnerable_button,self.language.t('无敌模式'),'TButton')
         remembered=self.invulnerable_targets;confirmed=0
         if not remembered:
             note='选好对象后点击无敌模式应用。' if self.vars['invulnerable_mode'].get() else '点击应用并记住对象；重新勾选不改变名单。'
@@ -5012,6 +5671,10 @@ class App:
                 r=info.rcWork;return r.left,r.top,r.right,r.bottom
         except (OSError,AttributeError):pass
         return 0,0,self.root.winfo_screenwidth(),self.root.winfo_screenheight()
+    def layout_header(self,width):
+        wide=self.header_title.winfo_reqwidth()+self.header_controls.winfo_reqwidth()+24<=width
+        if wide:self.header_controls.grid_configure(row=0,column=1,columnspan=1,pady=0)
+        else:self.header_controls.grid_configure(row=1,column=0,columnspan=2,pady=(6,0))
     def fit_window(self):
         self.fit_job=None
         if self.closing or self.fitting_window:return
@@ -5055,7 +5718,7 @@ class App:
             self.root.after_cancel(self.invulnerable_tip_job);self.invulnerable_tip_job=None
         if self.invulnerable_tip is not None:self.invulnerable_tip.destroy();self.invulnerable_tip=None
     def toggle_invulnerability(self):
-        targets=self.setting_targets()
+        targets=self.setting_targets('invulnerable')
         if not targets or not self.ready:
             self.log('无敌模式已选定；选好对象后点击按钮应用。');self.refresh_invulnerability_ui();return True
         accepted=self.request('invulnerability',keys=targets,auto=self.vars['invulnerable_auto'].get())
@@ -5064,6 +5727,9 @@ class App:
             self.refresh_invulnerability_ui()
         return accepted
     def select_lock_mode(self,key):
+        self.schedule_save()
+        if self.player_scopes[key]!='selected':
+            self.update_scope_listener(key);self.refresh_scope_buttons();return True
         if not self.ready or not self.checked:
             if self.ready and not self.vars[key+'_lock_mode'].get():return self.update_locks(use_highlight=False)
             self.log(('血量' if key=='hp' else '金钱')+'模式已保留，勾选玩家后生效。');return True
@@ -5075,7 +5741,15 @@ class App:
         for value,var in self.mode_checks[key].items():var.set(value==mode)
         if not self.settings_loading and mode=='once' and self.ready and self.vars['round_'+key].get():
             self.request('round_setting',field=key,keys=[],value=None)
-    def setting_targets(self):
+    def setting_targets(self,field=None):
+        scope=self.player_scopes.get(field,'selected')
+        if scope!='selected':
+            roster=[p for p in self.players.values() if p.team in (2,3)]
+            me=next((p for p in roster if p.local),None)
+            if me is None:return []
+            if scope=='self':roster=[me]
+            elif scope=='team':roster=[p for p in roster if p.team==me.team and p.key!=me.key]
+            return sorted((p.key for p in roster),key=lambda k:k.index)
         valid={player.key for player in self.players.values()}
         self.checked.intersection_update(valid)
         if not self.checked:
@@ -5084,10 +5758,11 @@ class App:
         self.draw_selection()
         return sorted(self.checked,key=lambda item:item.index)
     def apply_setting(self,key):
+        if self.player_scopes[key]!='selected':self.update_scope_listener(key);return True
         if self.vars[key+'_lock_mode'].get():return self.apply_once(key)
         return self.set_each_round(key) if self.action_modes[key]=='round' else self.apply_once(key)
     def set_each_round(self,key):
-        targets=self.setting_targets()
+        targets=self.setting_targets(key)
         if not targets or not self.ready:
             self.log(('血量' if key=='hp' else '金钱')+'设置已保留；选好玩家后点击设置。');return True
         return self.request('round_setting',field=key,keys=targets,value=self.vars[key+'_value'].get())
@@ -5126,20 +5801,26 @@ class App:
         menu=self.teleport_menus[action];arrow=self.teleport_arrows[action]
         menu.entryconfigure(0,label=self.language.t('立即传送一次'),
                             state='normal' if self.player_actions[action].instate(['!disabled']) else 'disabled')
-        menu.entryconfigure(1,label=self.language.t('每个新对局执行一次'),state='normal')
+        menu.entryconfigure(1,label=self.language.t('每个新对局执行一次')+('  ✓' if self.teleport_modes[action].get() else ''),state='normal')
         try:menu.tk_popup(arrow.winfo_rootx(),arrow.winfo_rooty()+arrow.winfo_height())
         finally:menu.grab_release()
     def open_ghost_menu(self):
         if getattr(self,'ghost_popup',None) is not None:self.ghost_popup.destroy()
         menu=tk.Menu(self.root,tearoff=False,bg=CARD,fg=TEXT,activebackground=BLUE)
         self.ghost_popup=menu
-        for p in self.players.values():
+        menu.configure(bg='#202e3c',fg='#f5f8fb',activebackground='#246452',activeforeground='white',font=('Microsoft YaHei UI',11))
+        for enabled,title in ((True,'开启幽灵显形监听'),(False,'停用功能')):
+            mark='  ✓' if self.ghost_desired==enabled else ''
+            menu.add_command(label=self.language.t(title)+mark,command=lambda on=enabled:self.request('ghost',enabled=on))
+        menu.add_separator()
+        added=False
+        for p in self.players.values() if self.ready else ():
             if not Controls.eligible_ghost(p):continue
             sub=tk.Menu(menu,tearoff=False,bg=CARD,fg=TEXT,activebackground=BLUE)
             for enabled,title in ((True,'幽灵显形'),(False,'幽灵隐身')):
                 sub.add_command(label=self.language.t(title),command=lambda k=p.key,e=enabled:self.request('ghost',key=k,enabled=e))
-            menu.add_cascade(label=f'#{p.key.index} {p.name}',menu=sub)
-        if menu.index('end') is None:menu.add_command(label=self.language.t('暂无幽灵'),state='disabled')
+            menu.add_cascade(label=f'#{p.key.index} {p.name}',menu=sub);added=True
+        if not added:menu.add_command(label=self.language.t('暂无幽灵' if self.ready else '等待进入游戏'),state='disabled')
         try:menu.tk_popup(self.ghost_arrow.winfo_rootx(),self.ghost_arrow.winfo_rooty()+self.ghost_arrow.winfo_height())
         finally:menu.grab_release()
     def update_player_actions(self):
@@ -5150,7 +5831,7 @@ class App:
                 button.configure(text=self.language.t('幽灵显形 · 运行中' if self.ghost_running else '幽灵显形 · 等待对局' if self.ghost_desired else '幽灵重新隐藏中' if self.ghost_restoring else '幽灵显形'),
                                  style='Running.TButton' if self.ghost_desired or self.ghost_running else 'Small.TButton')
                 button.state(['!disabled'])
-                self.ghost_arrow.state(['!disabled'] if available else ['disabled'])
+                self.ghost_arrow.state(['!disabled'])
                 continue
             enabled=player is not None and (action=='copy' or (self.ready and not player.local and player.team in (2,3)))
             if action in ('goto','bring'):
@@ -5189,6 +5870,9 @@ class App:
         if player.team not in (2,3):self.log('观战或电视实体不能作为此操作目标',True);return False
         return self.request('player_action',operation=action,key=player.key)
     def refresh_language(self):
+        self.refresh_zeta_choices()
+        for item in self.chat_rows:self.update_chat_count(item)
+        self.refresh_round_buttons(force=True);self.refresh_scope_menus();self.refresh_mode_controls()
         self.heroes_model_window.title(self.language.t('玩家模型切换'))
         self.update_heroes_models(self.heroes_model_rows,self.heroes_model_reason)
         self.update_heroes_levels(self.heroes_level_rows,self.language.source(self.heroes_upgrade_status.cget('text')))
@@ -5232,20 +5916,231 @@ class App:
         self.refresh_invulnerability_ui()
         self.update_player_actions()
     def apply_once(self,key):
-        targets=self.setting_targets()
+        targets=self.setting_targets(key)
         if not targets or not self.ready:
             self.log(('血量' if key=='hp' else '金钱')+'设置已保留；选好玩家后点击设置。');return True
         return self.request('once',keys=targets,field=key,value=self.vars[key+'_value'].get(),lock=self.vars[key+'_lock_mode'].get())
     def update_locks(self,use_highlight=True):
         targets=self.setting_targets() if use_highlight else sorted(self.checked,key=lambda item:item.index)
         if not self.ready:return False
-        if not targets:
-            self.log('已清空锁定对象；勾选玩家时锁定其当前数值。')
-        accepted=self.request('locks',keys=targets,
-                              hp_enabled=bool(targets) and self.vars['hp_lock_mode'].get(),
-                              money_enabled=bool(targets) and self.vars['money_lock_mode'].get())
-        if not accepted:self.vars['hp'].set(False);self.vars['money'].set(False)
+        accepted=True
+        for field in ('hp','money'):
+            if self.player_scopes[field]!='selected':
+                self.update_scope_listener(field);continue
+            accepted=bool(self.request('field_lock',field=field,keys=targets,enabled=bool(targets) and self.vars[field+'_lock_mode'].get())) and accepted
         return accepted
+    def publish_listener_versions(self):
+        if self.worker:self.worker.listener_versions=self.listeners.versions()
+    def arm_listener(self,key,action,data,mode='once',skip=None):
+        previous=self.listeners.jobs.get(key,{}).get('revision')
+        revision=self.listeners.arm(key,action,dict(data),mode,skip)
+        self.publish_listener_versions()
+        if revision!=previous and not self.settings_loading:
+            self.schedule_save()
+            if self.worker and not self.auto_connect and data.get('enabled',True) and not (action=='scope_apply' and not data.get('scope')):
+                self.request('connect',require_ready=False,game=self.game_directory)
+    def cancel_listener(self,key):
+        self.listeners.cancel(key);self.publish_listener_versions()
+    def arm_wait(self,widget,action,data,mode='once'):
+        key=self.wait_ids[widget]
+        for ident,job in list(self.listeners.jobs.items()):
+            old_action,old_data,_,_=job['spec']
+            if ident.startswith('stop:') and old_action==action and old_data.get('field')==data.get('field') and old_data.get('operation')==data.get('operation'):
+                self.cancel_listener(ident)
+        for other,ident in self.wait_ids.items():
+            job=self.listeners.jobs.get(ident)
+            if other is widget or not job:continue
+            old_action,old_data,_,_=job['spec']
+            if old_action==action and old_data.get('field')==data.get('field') and old_data.get('operation')==data.get('operation'):
+                self.waiting_controls.pop(other,None);self.cancel_listener(ident)
+        if data.get('enabled') is False:
+            self.cancel_wait(widget)
+            # Retry an idempotent shutdown only within this game context.
+            # It is neither an enabled listener nor a saved future-match preference.
+            if self.ready and self.worker:
+                self.arm_listener('stop:'+key,action,dict(data,stop_epoch=self.epoch),'once')
+                self.refresh_mode_controls()
+            self.schedule_save()
+            return True
+        self.waiting_controls[widget]=bool(data.get('enabled',True))
+        self.arm_listener(key,action,data,mode)
+        self.refresh_mode_controls()
+        return True
+    def cancel_wait(self,widget):
+        self.waiting_controls.pop(widget,None)
+        self.cancel_listener(self.wait_ids[widget]);self.refresh_mode_controls();self.schedule_save()
+    def load_feature_listeners(self,settings):
+        for key in list(self.listeners.jobs):
+            if key.startswith('feature:'):self.cancel_listener(key)
+        pending=settings.get('pending_features',{})
+        if isinstance(pending,dict):
+            for action,data in pending.items():
+                if action in ROUND_FEATURE_KEYS and isinstance(data,dict) and data.get('enabled') is True:self.arm_listener('preference:'+action,action,data)
+        saved=settings.get('feature_listeners',[])
+        by_id={v:k for k,v in self.wait_ids.items()}
+        if isinstance(saved,list):
+            for item in saved:
+                if not isinstance(item,dict) or item.get('id') not in by_id:continue
+                if item.get('action') not in LISTENER_ACTION_FEATURES or not isinstance(item.get('data'),dict):continue
+                # Object IDs are never persisted across process or map lifetimes.
+                data=item['data']
+                if 'keys' in data or 'key' in data or data.get('enabled') is False:continue
+                if item['action']=='chat':
+                    if data.get('text') not in [v.get().strip() for _,v,_,_,_ in self.chat_rows]:continue
+                    data=dict(text=data['text'],team=self.chat_team.get()=='team')
+                elif item['action']=='chat_timer':
+                    try:data=self.chat_timer_inputs()
+                    except ValueError:continue
+                    self.arm_wait(by_id[item['id']],'chat_timer',data,'maintain')
+                    continue
+                self.arm_wait(by_id[item['id']],item['action'],data,'maintain' if item.get('mode')=='maintain' else 'once')
+    def listener_result(self,result):
+        key=result['listener'];job=self.listeners.jobs.get(key)
+        action=job['spec'][0] if job else None
+        completed=self.listeners.accept(result)
+        if completed:
+            if key.startswith('command:'):
+                token=key[len('command:'):]
+                self.round_enabled.discard(token);self.round_once.discard(token);self.round_skip.pop(token,None);self.round_barriers.pop(token,None)
+                self.round_sent.add(token)
+            for widget,ident in self.wait_ids.items():
+                if ident==key:self.waiting_controls.pop(widget,None)
+            if action=='chat' and result['success']:
+                self.chat_index+=1
+            self.schedule_save()
+        self.publish_listener_versions()
+    def update_scope_listener(self,field):
+        scope=self.player_scopes[field];key='scope:'+field
+        if scope=='selected':return
+        try:value=bounded_int(self.vars[field+'_value'].get(),1 if field=='hp' else 0,999999,'数值') if field!='invulnerable' else 1
+        except ValueError:
+            self.cancel_listener(key);return
+        data=dict(field=field,scope=scope,value=value,lock=True if field=='invulnerable' else self.vars[field+'_lock_mode'].get())
+        self.arm_listener(key,'scope_apply',data,'maintain')
+    def refresh_scope_buttons(self):
+        for field,button in self.value_buttons.items():
+            button.state(['!disabled'])
+            active=self.player_scopes[field]!='selected'
+            title=self.language.t('设置血量' if field=='hp' else '设置金钱')
+            if active:
+                scope_title={'self':'本人','team':'队友','both':'双方'}[self.player_scopes[field]]
+                title+='\n'+self.language.t(scope_title)+' · '+self.language.t('运行中' if self.ready else '监听中')
+            state=(title,active,self.language.lang)
+            if getattr(button,'_scope_view',None)!=state:
+                self.set_listener_caption(button,self.language.t(title),'Running.TButton' if active else 'Small.TButton');button._scope_view=state
+            lock=self.lock_buttons[field];lock.state(['!disabled'])
+            caption=self.language.t('锁定血量' if field=='hp' else '锁定金钱')
+            if active:
+                caption+='\n'+self.language.t(scope_title)
+                if self.vars[field+'_lock_mode'].get():caption+=' · '+self.language.t('运行中' if self.ready else '监听中')
+            lock.configure(text=caption)
+    def advance_listeners(self):
+        if self.settings_loading or self.closing:return
+        self.capture_first_round()
+        for key,job in list(self.listeners.jobs.items()):
+            if key.startswith('stop:') and (not self.ready or job['spec'][1].get('stop_epoch')!=self.epoch):self.cancel_listener(key)
+        for field in ('hp','money','invulnerable'):
+            if self.player_scopes[field]!='selected':self.update_scope_listener(field)
+        # Snapshot command values, so editing a delayed command invalidates its old ticket.
+        for token in tuple(self.round_enabled):
+            if token not in self.round_buttons:continue
+            command=self.round_buttons[token][3]().strip()
+            try:command_bytes(command)
+            except ValueError:
+                self.set_round_watch(token,False);continue
+            self.arm_listener('command:'+token,'command',dict(text=command),
+                              'once' if token in self.round_once else 'every',self.round_skip.get(token))
+        self.publish_listener_versions()
+        if not self.worker or not self.ready or not self.auto_connect:return
+        now=time.monotonic()
+        for key,job in list(self.listeners.jobs.items()):
+            action,data,mode,skip=job['spec'];payload=dict(data);payload['epoch']=self.epoch
+            feature=LISTENER_ACTION_FEATURES.get(action)
+            if action=='scope_apply':feature='invulnerable' if data['field']=='invulnerable' else data['field']
+            if feature and data.get('enabled',True) and not self.capabilities.get(feature,{}).get('available',False):continue
+            stamp=self.epoch
+            if action=='command':
+                try:command_bytes(data['text'])
+                except ValueError as exc:
+                    self.set_round_watch(key.removeprefix('command:'),False);self.log(str(exc),True);continue
+                if not self.round_snapshot_ready:continue
+                token=key.removeprefix('command:')
+                barrier=self.round_barriers.get(token)
+                if barrier and barrier==round_identity_marker(self.round_view,self.round_session):continue
+                stamp=self.round_view
+                # A restart must not trigger itself indefinitely through its own round transition.
+                if any(part[0].lower() in ('mp_restartgame','restart','changelevel') for part in console_segments(data['text'])):
+                    stamp=('map',self.epoch)
+                    if skip is not None and self.round_view==skip:continue
+            elif mode=='every':
+                if not self.round_snapshot_ready:continue
+                stamp=self.round_view
+            elif mode=='scan':stamp=(self.epoch,int(now/3.))
+            elif action=='scope_apply':
+                payload.pop('scope',None)
+                keys=listener_player_keys(self.players.values(),data.get('scope')) if data.get('scope') else []
+                # Empty scope still removes ownership of targets that left or changed team.
+                payload['keys']=keys
+                roster={p.key:p for p in self.players.values()}
+                stamp=(self.epoch,self.round_view,tuple((k,roster[k].alive) for k in keys),self.runtime_revision)
+            elif mode=='maintain':
+                stamp=(self.epoch,self.runtime_revision)
+            if job['pending'] and job['pending'][1]!=stamp:
+                job['pending']=None
+            self.listeners.dispatch(key,stamp,payload,lambda ticket:(self.publish_listener_versions() or self.worker.submit('listener_execute',ticket=ticket)))
+    def click_wait_control(self,widget):
+        key,title,callback=self.wait_controls[widget]
+        ident=self.wait_ids[widget];old=self.listeners.jobs.get(ident)
+        if old:
+            action,data,mode,_=old['spec']
+            self.cancel_wait(widget)
+            if 'enabled' in data and data['enabled']:
+                off=dict(data,enabled=False)
+                if isinstance(widget,ttk.Checkbutton):widget.setvar(str(widget.cget('variable')),False)
+                if action=='heroes_auto':self.vars['heroes_auto'].set(False)
+                self.arm_wait(widget,action,off)
+            if data.get('enabled',True):return True
+        # Run the normal UI validation once; intercept only its final request call.
+        self._capturing_wait=widget;self._captured_request=None
+        try:widget.tk.call(callback)
+        finally:self._capturing_wait=None
+        captured=self._captured_request
+        if captured is None:return False
+        action,data=captured
+        mode='maintain' if action in LISTENER_CONTINUOUS and data.get('enabled',True) else 'once'
+        return self.arm_wait(widget,action,data,mode)
+    def refresh_mode_controls(self):
+        def capable(key):return self.ready and self.capabilities.get(key,{}).get('available',False)
+        toggle_vars={'heroes_temple':'heroes_temple','heroes_no_wait':'heroes_no_wait',
+                     'heroes_auto':'heroes_auto','heroes_custom_damage':'heroes_custom_damage',
+                     'heroes_no_attack':'heroes_no_attack','chat_timer':'chat'}
+        for action,varname in toggle_vars.items():
+            if varname not in self.vars:continue
+            desired=any(j['spec'][0]==action and j['spec'][1].get('enabled',True) for j in self.listeners.jobs.values())
+            if bool(self.vars[varname].get())!=desired:self.vars[varname].set(desired)
+        for widget,(key,title,_) in self.wait_controls.items():
+            job=self.listeners.jobs.get(self.wait_ids[widget]);armed=job is not None
+            stopping=self.listeners.jobs.get('stop:'+self.wait_ids[widget])
+            if armed and isinstance(widget,ttk.Checkbutton):widget.setvar(str(widget.cget('variable')),job['spec'][1].get('enabled',True))
+            status=job['state'] if job else ''
+            state=(armed,capable(key),status,bool(stopping),self.language.lang)
+            old=getattr(widget,'_wait_view',None)
+            if old==state:continue
+            if stopping and not armed:
+                self.set_listener_caption(widget,self.language.t(title)+'\n（'+self.language.t('关闭中，等待处理')+'）',
+                    'Small.TButton' if isinstance(widget,ttk.Button) else widget.cget('style'))
+            elif armed:
+                note='监听中，等待进入游戏'
+                if capable(key):note={'waiting':'等待自动应用','queued':'已提交，等待处理','submitted':'运行中','applied':'运行中','armed':'等待原生突变按键','failed':'未确认，等待下一局'}.get(status,'运行中')
+                if key=='weapon_spawn' and not capable(key):note='监听中，等待进游戏'
+                self.set_listener_caption(widget,self.language.t(title)+'\n（'+self.language.t(note)+'）',
+                    'Running.TButton' if isinstance(widget,ttk.Button) else widget.cget('style'))
+            else:
+                self.set_listener_caption(widget,self.language.t(title),
+                    'Small.TButton' if isinstance(widget,ttk.Button) else widget.cget('style'))
+                if title=='怪物自动死亡':self.refresh_heroes_auto()
+            widget._wait_view=state
+
     def build_features(self):
         scroll=ScrollFrame(self.pages['features']);scroll.pack(fill='both',expand=True);page=scroll.body
         top=tk.Frame(page,bg=CARD,highlightbackground=BORDER,highlightthickness=1);top.pack(fill='x',pady=(0,9))
@@ -5254,8 +6149,9 @@ class App:
         row=tk.Frame(top,bg=CARD);row.pack(fill='x')
         self.feature_control(ttk.Checkbutton(row,text='开启作弊功能（sv_cheats）',variable=self.boolvar('cheats'),command=self.change_cheats),'cheats').pack(side='left',padx=11,pady=6)
         self.vars['cheats'].set(self.cheats_desired)
-        label(row,'状态以游戏实值为准',True,9).pack(side='right',padx=12)
-        label(top,'房主对局自动应用本页已保存的功能开关',True,9).pack(anchor='w',padx=12,pady=(0,6))
+        self.feature_mode_note=label(row,'等待游戏，可预设本页开关',True,9)
+        self.feature_mode_note.pack(side='right',padx=12)
+        label(top,'开启每局应用后，在房主对局使用这些设置',True,9).pack(anchor='w',padx=12,pady=(0,6))
         box=self.card(page,'对所有人有效')
         self.feature_control(ttk.Checkbutton(box,text='无限子弹',variable=self.boolvar('ammo'),command=lambda:self.request('ammo',enabled=self.vars['ammo'].get())),'ammo').pack(anchor='w')
         row=tk.Frame(box,bg=CARD);row.pack(fill='x',pady=(2,0))
@@ -5285,18 +6181,23 @@ class App:
         self.weapon_query=tk.StringVar();ttk.Entry(row,textvariable=self.weapon_query,width=12).pack(side='left',padx=(0,8))
         self.weapon_choice=tk.StringVar();self.weapon_box=ttk.Combobox(row,textvariable=self.weapon_choice,state='readonly',width=26);self.weapon_box.pack(side='left',fill='x',expand=True)
         self.spawn_weapon_button=self.feature_control(ttk.Button(row,text='生成到地面',style='Small.TButton',command=self.spawn_weapon),'weapon_spawn');self.spawn_weapon_button.pack(side='left',padx=(9,0))
+        self.spawn_weapon_button.pack_configure(side='right',before=self.weapon_box)
         self.weapon_query.trace_add('write',lambda *_:self.filter_weapons());self.filter_weapons()
+        self.weapon_choice.trace_add('write',lambda *_:self.cancel_wait(self.spawn_weapon_button) if self.spawn_weapon_button in self.waiting_controls else None)
         box=self.card(page,'生化 ZETA · 变异技能')
-        row=tk.Frame(box,bg=CARD);row.pack(fill='x',pady=(0,5))
-        label(row,'增加变异次数').pack(side='left');ttk.Entry(row,textvariable=self.strvar('mutation_count',1),width=5).pack(side='left',padx=9)
-        self.feature_control(ttk.Button(row,text='增加',style='Small.TButton',command=lambda:self.request('mutation_add',count=self.vars['mutation_count'].get())),'mutation').pack(side='left')
-        self.feature_control(ttk.Button(row,text='读取次数',style='Small.TButton',command=lambda:self.request('mutation_read')),'mutation_read').pack(side='left',padx=8)
-        label(row,'单次 1～10',True,9).pack(side='left')
-        row=tk.Frame(box,bg=CARD);row.pack(fill='x',pady=4)
-        self.machine_rows=[];self.machine_choice=tk.StringVar();self.machine_box=ttk.Combobox(row,textvariable=self.machine_choice,state='readonly',width=28);self.machine_box.pack(side='left',fill='x',expand=True)
-        self.feature_control(ttk.Button(row,text='刷新机器',style='Small.TButton',command=lambda:self.request('machine_scan')),'machine').pack(side='left',padx=8)
-        self.feature_control(ttk.Button(row,text='重抽机器技能',style='Small.TButton',command=self.reroll_machine),'machine').pack(side='left')
-        self.bio_status=label(box,'仅生化 ZETA 模式可用。',True,9,wraplength=720,justify='left');self.bio_status.pack(anchor='w',pady=(4,0))
+        form=tk.Frame(box,bg=CARD);form.pack(fill='x');form.columnconfigure(2,weight=1)
+        for row,(field,title,default,action) in enumerate((('mutation_count','增加技能数量上限',1,'zeta_limit'),('mutation_points','增加突变点数',10,'zeta_points'))):
+            label(form,title).grid(row=row,column=0,sticky='w',padx=(0,12),pady=4)
+            ttk.Entry(form,textvariable=self.strvar(field,default),width=7).grid(row=row,column=1,sticky='w',pady=4)
+            self.feature_control(ttk.Button(form,text=title,style='Small.TButton',command=lambda f=field,a=action:self.submit_zeta_value(f,a)),'zeta').grid(row=row,column=2,sticky='w',padx=(12,0),pady=4)
+        row=tk.Frame(box,bg=CARD);row.pack(fill='x',pady=6)
+        self.zeta_skill_choice=tk.StringVar();self.zeta_skill_box=self.skin_combo(row,textvariable=self.zeta_skill_choice,state='readonly',width=36)
+        self.zeta_skill_box.pack(side='left',fill='x',expand=True)
+        self.zeta_skill_button=self.feature_control(ttk.Button(row,text='指定突变一次',style='Small.TButton',command=self.arm_zeta_skill),'zeta')
+        self.zeta_skill_button.pack(side='right',padx=(9,0),before=self.zeta_skill_box)
+        self.zeta_skill_box.bind('<<ComboboxSelected>>',lambda _:self.change_zeta_choice())
+        self.refresh_zeta_choices()
+        self.bio_status=label(box,'先选择技能并点击指定；进入 ZETA 后，下一次按原生突变键取得所选技能。',True,9,wraplength=720,justify='left');self.bio_status.pack(anchor='w',pady=(4,0))
         box=self.card(page,'洛奇英雄传功能');self.heroes_card=box
         bar=tk.Frame(box,bg=CARD);bar.pack(fill='x',pady=(0,6))
         self.boolvar('heroes_auto');self.boolvar('heroes_no_wait')
@@ -5327,7 +6228,7 @@ class App:
             label(form,title,True).grid(row=row,column=0,sticky='w',pady=5)
             combo=ttk.Combobox(form,textvariable=self.strvar('heroes_'+field,''),state='readonly',width=23)
             combo.grid(row=row,column=1,sticky='ew',pady=5);self.heroes_level_boxes[field]=combo
-            self.feature_control(ttk.Button(form,text='应用全体',width=12,style='Small.TButton',command=lambda f=field:self.apply_heroes_upgrade(f)),'heroes_upgrade').grid(row=row,column=2,sticky='ew',padx=(12,0),pady=5)
+            self.feature_control(ttk.Button(form,text='应用全体',width=12,style='Small.TButton',command=lambda f=field:self.apply_heroes_upgrade(f)),'heroes_upgrade',listener_id=field).grid(row=row,column=2,sticky='ew',padx=(12,0),pady=5)
         label(form,'所有玩家自定义伤害',True).grid(row=4,column=0,sticky='w',pady=5)
         self.heroes_damage_entry=ttk.Entry(form,textvariable=self.strvar('heroes_damage_value','999999999'),width=23)
         self.heroes_damage_entry.grid(row=4,column=1,sticky='ew',pady=5)
@@ -5369,19 +6270,25 @@ class App:
             except ValueError as ex:self.log(str(ex),True);self.vars['heroes_custom_damage'].set(False);return False
         accepted=self.request('heroes_custom_damage',enabled=enabled,value=value)
         if accepted:
-            self.heroes_damage_note.configure(text=f'已提交，实际单次伤害 {stored:.0f}' if enabled else '当前使用原生伤害')
+            self.heroes_damage_note.configure(text=('监听中，等待进入游戏' if self._capturing_wait is not None else f'已提交，实际单次伤害 {stored:.0f}') if enabled else '当前使用原生伤害')
             self.schedule_save()
         return accepted
 
     def refresh_heroes_auto(self):
+        if getattr(self,'_capturing_wait',None) is not None:return
+        if self.wait_ids.get(self.heroes_auto_button) in self.listeners.jobs:return
+        if 'stop:'+self.wait_ids.get(self.heroes_auto_button,'') in self.listeners.jobs:return
         enabled=self.vars['heroes_auto'].get()
-        self.heroes_auto_button.configure(text='停止怪物自动死亡' if enabled else '怪物自动死亡',style='Running.TButton' if enabled else 'Small.TButton')
+        self.set_listener_caption(self.heroes_auto_button,self.language.t('停止怪物自动死亡' if enabled else '怪物自动死亡'),'Running.TButton' if enabled else 'Small.TButton')
     def toggle_heroes_auto(self):
         enabled=not self.vars['heroes_auto'].get()
         if self.request('heroes_auto',enabled=enabled,seconds=self.vars['heroes_seconds'].get()):self.vars['heroes_auto'].set(enabled)
     def apply_heroes_seconds(self):
         try:bounded_float(self.vars['heroes_seconds'].get(),0,3600,'怪物死亡倒计时')
         except ValueError as ex:self.log(str(ex),True);return False
+        ident=self.wait_ids.get(self.heroes_auto_button)
+        if ident in self.listeners.jobs:
+            self.arm_wait(self.heroes_auto_button,'heroes_auto',dict(enabled=True,seconds=self.vars['heroes_seconds'].get()),'maintain');return True
         if self.vars['heroes_auto'].get():return self.request('heroes_auto',enabled=True,seconds=self.vars['heroes_seconds'].get())
         self.schedule_save();return True
     def queue_heroes_seconds(self):
@@ -5493,7 +6400,7 @@ class App:
     def team_skin_options(self,team):
         rows=self.skin_items.get(team,[])
         options=[('female',self.language.t('全部随机女性角色')),('male',self.language.t('全部随机男性角色'))]
-        options.extend((r['id'],f"{r['name']} · {r['id']} · {Path(r['model']).stem}") for r in rows)
+        options.extend((r['id'],self.skin_row_label(r)) for r in rows)
         return options
     def selected_team_option(self,team):
         n=self.skin_choices[team].current()
@@ -5558,10 +6465,66 @@ class App:
         self.skin_selected[team]=choice;self.schedule_save()
         if continuous:return self.request('bot_skin_rule',team=team,skin=choice,enabled=True,view=self.skin_view)
         return self.request('bot_skin_batch',choices={team:choice},view=self.skin_view)
+    def skin_row_label(self,row):
+        code=row['name'].strip();names=ROLE_NAMES.get(code,{})
+        name=names.get(self.language.lang) or names.get('zh') or names.get('en') or code
+        label=f"{name} · {row['id']} · {code}"
+        if not hasattr(self,'skin_search_labels'):self.skin_search_labels={}
+        self.skin_search_labels[label]=' '.join((label,names.get('zh',''),names.get('en',''),Path(row['model']).stem)).casefold()
+        return label
+    def skin_search_changed(self,combo):
+        state=combo._skin_search;lb=state['listbox']
+        if state.get('job') is not None:self.root.after_cancel(state['job']);state['job']=None
+        old=state.get('index')
+        try:
+            self.root.tk.call(state['result'].rsplit('.',1)[0]+'.label','configure','-text',self.language.t('搜索'))
+            if old is not None:self.root.tk.call(lb,'itemconfigure',old,'-background',INPUT,'-selectbackground',BLUE)
+            query=state['query'].get().strip().casefold();values=combo.cget('values')
+            matches=[i for i,value in enumerate(values) if query and query in getattr(self,'skin_search_labels',{}).get(value,value.casefold())]
+            state['index']=matches[0] if matches else None
+            self.root.tk.call(state['result'],'configure','-text',str(len(matches)) if query else '')
+            if not matches:return
+            index=matches[0];height=max(1,int(self.root.tk.call(lb,'cget','-height')))
+            top=max(0,min(index-height//2,len(values)-height))
+            self.root.tk.call(lb,'yview',top);self.root.tk.call(lb,'see',index)
+            def blink(on=True):
+                try:
+                    if not int(self.root.tk.call('winfo','ismapped',lb)):state['job']=None;return
+                    color=BLUE if on else INPUT
+                    self.root.tk.call(lb,'itemconfigure',index,'-background',color,'-selectbackground',color)
+                    state['job']=self.root.after(450,lambda:blink(not on))
+                except tk.TclError:state['job']=None
+            blink()
+        except tk.TclError:return
     def skin_combo(self,parent,**kwargs):
         combo=ttk.Combobox(parent,style='Skin.TCombobox',**kwargs)
-        popup=combo.tk.call('ttk::combobox::PopdownWindow',str(combo))
+        popup=str(combo.tk.call('ttk::combobox::PopdownWindow',str(combo)))
         combo.tk.call(f'{popup}.f.sb','configure','-style','Skin.Vertical.TScrollbar')
+        if tuple(kwargs.get('values',()))==('CT','T'):return combo
+        head=popup+'.f.search';entry=head+'.entry';result=head+'.result'
+        query=tk.StringVar(master=self.root)
+        self.root.tk.call('ttk::frame',head)
+        self.root.tk.call('ttk::label',head+'.label','-text',self.language.t('搜索'))
+        self.root.tk.call('ttk::entry',entry,'-textvariable',str(query))
+        self.root.tk.call('ttk::label',result,'-width',4)
+        self.root.tk.call('pack',head+'.label','-side','left','-padx',5)
+        self.root.tk.call('pack',result,'-side','right','-padx',5)
+        self.root.tk.call('pack',entry,'-fill','x','-expand',1,'-padx',4,'-pady',6)
+        self.root.tk.call('grid',popup+'.f.l','-row',1)
+        self.root.tk.call('grid',popup+'.f.sb','-row',1)
+        self.root.tk.call('grid',head,'-row',0,'-column',0,'-columnspan',2,'-sticky','ew')
+        self.root.tk.call('grid','rowconfigure',popup+'.f',0,'-weight',0)
+        self.root.tk.call('grid','rowconfigure',popup+'.f',1,'-weight',1)
+        lb=popup+'.f.l'
+        # Native ComboboxListbox cancels on FocusOut, including focus into our entry.
+        self.root.tk.call('bind',lb,'<FocusOut>','break')
+        for target in (entry,head,head+'.label',result):
+            self.root.tk.call('bind',target,'<Escape>',f'ttk::combobox::Unpost {combo}; break')
+        self.root.tk.call('bind',entry,'<Return>',f'focus {lb}; break')
+        self.root.tk.call('bind',entry,'<Down>',f'focus {lb}; break')
+        combo._skin_search={'query':query,'entry':entry,'listbox':lb,'result':result,'job':None,'index':None}
+        query.trace_add('write',lambda *_:self.skin_search_changed(combo))
+        combo.bind('<<DropdownOpened>>',lambda e:self.root.after_idle(lambda:self.skin_search_changed(combo)))
         return combo
     def skin_ui_label(self,parent,text,**kwargs):
         widget=label(parent,self.language.t(text),**kwargs)
@@ -5578,7 +6541,7 @@ class App:
     def skin_option_list(self,team):
         rows=self.skin_items.get(team,[])
         labels=[self.language.t('跟随游戏'),self.language.t('每回合随机')]
-        labels += [f"{r['name']} · {r['id']} · {Path(r['model']).stem}" for r in rows]
+        labels += [self.skin_row_label(r) for r in rows]
         return [None,-1]+[r['id'] for r in rows],labels
     def commit_skin_plan(self):
         self.skin_plan=skin_plan_settings(self.skin_plan)
@@ -5718,7 +6681,9 @@ class App:
         if path:self.apply_heroes_model(path,[key])
     def apply_heroes_model(self,path,keys=None):
         if keys is None:keys=[key for key,var in self.heroes_model_checks.items() if var.get()]
-        if not keys:self.heroes_model_note.configure(text='请先勾选要切换模型的玩家。');return False
+        if not keys:
+            if self._capturing_wait is not None and not self.ready:return self.request('heroes_model',path=path,all_players=True)
+            self.heroes_model_note.configure(text='请先勾选要切换模型的玩家。');return False
         if self.request('heroes_model',path=path,keys=keys):
             self.heroes_model_note.configure(text=f'已提交 {len(keys)} 人，等待游戏处理。');return True
         return False
@@ -5726,23 +6691,26 @@ class App:
     def update_heroes_levels(self,rows,reason=''):
         self.heroes_level_rows=rows
         for field,box in self.heroes_level_boxes.items():
-            selected=box.current();raw=self.language.source(self.vars['heroes_'+field].get())
-            sources=[f'等级 {level} · {atk:g} 倍' if field=='atk' else f'{hp}（等级 {level}）' for level,atk,hp in rows]
-            if raw in sources:selected=sources.index(raw)
-            values=[self.language.t(value) for value in sources];box.configure(values=values)
-            if values:box.current(selected if 0<=selected<len(values) else 0)
-        self.heroes_upgrade_status.configure(text=reason or ('已读取本局原生强化配置。' if rows else '等待洛奇强化配置。'))
+            raw=self.language.source(self.vars['heroes_'+field].get());match=re.search(r'(?:等级 |Level )(\d+)',raw)
+            level=int(match.group(1)) if match else int(raw) if raw.isdigit() else 0
+            sources=[f'等级 {n} · {atk:g} 倍' if field=='atk' else f'{hp}（等级 {n}）' for n,atk,hp in rows] if rows else [str(n) for n in range(21)]
+            levels=[r[0] for r in rows] if rows else list(range(21))
+            box.configure(values=[self.language.t(v) for v in sources],state='readonly')
+            if level in levels:box.current(levels.index(level))
+            else:box.set(str(level))
+        self.heroes_upgrade_status.configure(text=reason or ('已读取本局原生强化配置。' if rows else '进房后按实际强化表应用所选等级。'))
     def apply_heroes_upgrade(self,field):
-        index=self.heroes_level_boxes[field].current()
-        if not 0<=index<len(self.heroes_level_rows):self.log('请先选择本局已加载的强化等级',True);return False
-        return self.request('heroes_upgrade',field=field,level=self.heroes_level_rows[index][0])
+        raw=self.language.source(self.vars['heroes_'+field].get());match=re.search(r'(?:等级 |Level )(\d+)',raw)
+        try:level=bounded_int(match.group(1) if match else raw,0,20,'强化等级')
+        except ValueError as ex:self.log(str(ex),True);return False
+        return self.request('heroes_upgrade',field=field,level=level)
     def update_scale_inputs(self):
         uniform=self.vars['scale_uniform'].get()
         for entry in (self.head_scale_entry,self.body_scale_entry):entry.state(['disabled'] if uniform else ['!disabled'])
         self.uniform_scale_entry.state(['!disabled'] if uniform else ['disabled'])
     def change_scale_mode(self):
         self.update_scale_inputs()
-        if self.ready and self.vars['scale'].get():return self.apply_scale()
+        if self.vars['scale'].get():return self.apply_scale()
         return True
     def change_each_round(self,capture=False):
         if capture and self.ready and self.vars['each_round'].get():
@@ -5767,25 +6735,337 @@ class App:
         command=self.weapon_command()
         if command:self.request('weapon_spawn',weapon=self.weapon_rows[self.weapon_box.current()]['name'])
         else:self.log('请先选择武器',True)
-    def reroll_machine(self):
-        index=self.machine_box.current()
-        if not 0<=index<len(self.machine_rows):self.log('请先刷新并选择一台变异机器',True);return
-        self.request('machine_reroll',key=self.machine_rows[index].key)
+    def change_zeta_choice(self):
+        self.cancel_wait(self.zeta_skill_button);self.schedule_save()
+    def refresh_zeta_choices(self,selected=None):
+        if not hasattr(self,'zeta_skill_box'):return
+        current=self.zeta_skill_box.current()
+        if selected is None and current<0:selected=self.settings.get('zeta_selected_skill')
+        if selected is not None:current=next((i for i,row in enumerate(ZETA_SKILLS) if row['id']==selected),0)
+        labels=[]
+        if not hasattr(self,'skin_search_labels'):self.skin_search_labels={}
+        for row in ZETA_SKILLS:
+            label=(row.get(self.language.lang) or row['zh'])+' · '+row['code'];labels.append(label)
+            self.skin_search_labels[label]=' '.join((row['zh'],row['en'],row['code'],str(row['id']))).casefold()
+        self.zeta_skill_box.configure(values=labels,state='readonly')
+        if labels:self.zeta_skill_box.current(max(0,min(current,len(labels)-1)))
+    def submit_zeta_value(self,field,action):
+        try:amount=bounded_int(self.vars[field].get(),1,255,'增加数值')
+        except ValueError as exc:self.log(str(exc),True);return False
+        return self.request(action,amount=amount)
+    def arm_zeta_skill(self):
+        index=self.zeta_skill_box.current()
+        if not 0<=index<len(ZETA_SKILLS):self.log('请选择有效突变技能',True);return False
+        return self.request('zeta_skill',skill=ZETA_SKILLS[index]['id'])
     def build_chat(self):
         box=self.card(self.pages['chat'],'游戏内喊话')
-        self.chat_text=tk.Text(box,height=10,bg=INPUT,fg=TEXT,insertbackground=TEXT,relief='flat',wrap='word',padx=10,pady=9,highlightthickness=1,highlightbackground=BORDER,font=('Microsoft YaHei UI',11))
-        self.chat_text.pack(fill='x',pady=(3,12));self.chat_text.insert('1.0',str(self.settings.get('chat_text','')))
-        row=tk.Frame(box,bg=CARD);row.pack(fill='x')
+        toolbar=tk.Frame(box,bg=CARD);toolbar.pack(fill='x')
+        label(toolbar,'从上到下发送，空行跳过。',True,9).pack(side='left')
+        ttk.Button(toolbar,text='新增条目',style='Small.TButton',command=lambda:self.add_chat_row('')).pack(side='right')
+        scroll=ScrollFrame(box);scroll.canvas.configure(height=190);scroll.pack(fill='both',expand=True,pady=5)
+        self.chat_rows_frame=scroll.body;self.chat_rows=[];self.chat_index=0
+        self.load_chat_rows(self.settings)
+        row=tk.Frame(box,bg=CARD);row.pack(fill='x',pady=(3,4))
         self.chat_team=self.strvar('chat_team','all')
         ttk.Radiobutton(row,text='全体',value='all',variable=self.chat_team).pack(side='left')
         ttk.Radiobutton(row,text='团队',value='team',variable=self.chat_team).pack(side='left',padx=(8,22))
         label(row,'间隔').pack(side='left');ttk.Entry(row,textvariable=self.strvar('interval',10),width=6).pack(side='left',padx=7);label(row,'秒').pack(side='left')
         row=tk.Frame(box,bg=CARD);row.pack(fill='x',pady=(15,0))
-        self.feature_control(ttk.Button(row,text='立即发言',style='Accent.TButton',command=self.send_chat),'chat').pack(side='left')
+        self.feature_control(ttk.Button(row,text='立即发送',style='Accent.TButton',command=self.send_chat),'chat').pack(side='left')
         self.feature_control(ttk.Checkbutton(row,text='定时发言',variable=self.boolvar('chat'),command=self.timer_chat),'chat').pack(side='left',padx=18)
-        label(box,'只发到当前对局；退出对局自动停止。',True,9).pack(anchor='w',pady=(12,0))
-    def send_chat(self):self.request('chat',text=self.chat_text.get('1.0','end-1c'),team=self.chat_team.get()=='team')
-    def timer_chat(self):self.request('chat_timer',enabled=self.vars['chat'].get(),text=self.chat_text.get('1.0','end-1c'),team=self.chat_team.get()=='team',interval=self.vars['interval'].get())
+        label(box,'仅在对局内发送；定时监听在进房后自动恢复。',True,9).pack(anchor='w',pady=(12,0))
+        self.chat_team.trace_add('write',self.chat_channel_changed)
+        self.vars['interval'].trace_add('write',self.sync_chat_timer)
+    def chat_channel_changed(self,*_):
+        if self.settings_loading:return
+        team=self.chat_team.get()=='team'
+        for widget,key in self.wait_ids.items():
+            job=self.listeners.jobs.get(key)
+            if not job:continue
+            action,data,mode,_skip=job['spec']
+            if action=='chat' and data.get('team')!=team:
+                if job['pending'] is not None:
+                    # The previous submission may already have reached the game.
+                    self.cancel_wait(widget)
+                else:
+                    self.arm_listener(key,action,dict(data,team=team),mode)
+        self.sync_chat_timer()
+    def chat_timer_inputs(self):
+        return dict(enabled=True,entries=self.chat_playlist(),team=self.chat_team.get()=='team',
+                    interval=bounded_float(self.vars['interval'].get(),1,3600,'喊话间隔'))
+    def sync_chat_timer(self,*_):
+        if self.settings_loading:return
+        for widget,key in self.wait_ids.items():
+            job=self.listeners.jobs.get(key)
+            if not job or job['spec'][0]!='chat_timer':continue
+            try:data=self.chat_timer_inputs()
+            except ValueError as exc:
+                self.arm_wait(widget,'chat_timer',{'enabled':False})
+                self.log(str(exc),True)
+            else:
+                self.arm_listener(key,'chat_timer',data,'maintain')
+            return
+    def load_chat_rows(self,settings):
+        previous=settings.get('chat_entries')
+        if not isinstance(previous,list):
+            previous=str(settings.get('chat_text','')).splitlines()
+        for item in self.chat_rows:item[0].destroy()
+        self.chat_rows.clear();self.chat_index=0
+        for text in previous or ['']:self.add_chat_row(str(text),redraw=False)
+        self.layout_chat_rows()
+    def invalidate_pending_chat(self):
+        for widget,ident in list(self.wait_ids.items()):
+            job=self.listeners.jobs.get(ident)
+            if job and job['spec'][0]=='chat':self.cancel_wait(widget)
+    def add_chat_row(self,text,redraw=True):
+        if redraw:self.invalidate_pending_chat()
+        frame=tk.Frame(self.chat_rows_frame,bg=CARD)
+        var=tk.StringVar(value=text)
+        ttk.Entry(frame,textvariable=var,width=18).pack(side='left',fill='x',expand=True,padx=(2,6),pady=3)
+        count=label(frame,'',True,9,width=23);count.pack(side='left')
+        up=ttk.Button(frame,text='↑',width=3,style='Small.TButton',command=lambda:self.move_chat_row(frame,-1))
+        down=ttk.Button(frame,text='↓',width=3,style='Small.TButton',command=lambda:self.move_chat_row(frame,1))
+        up.pack(side='left');down.pack(side='left')
+        ttk.Button(frame,text='×',width=3,style='Small.TButton',command=lambda:self.remove_chat_row(frame)).pack(side='left',padx=(3,0))
+        item=(frame,var,count,up,down);self.chat_rows.append(item)
+        previous=[var.get()]
+        def edited(*_):
+            old_value=previous[0]
+            previous[0]=var.get()
+            if previous[0]!=old_value:self.chat_row_edited(frame,old_value)
+            self.update_chat_count(item)
+        var.trace_add('write',edited);self.update_chat_count(item)
+        if redraw:self.sync_chat_timer();self.layout_chat_rows();self.schedule_save()
+    def chat_row_edited(self,frame,old_value):
+        pending=next((job for job in self.listeners.jobs.values() if job['spec'][0]=='chat'),None)
+        next_index=0
+        if pending:
+            old_rows=[row for row in self.chat_rows if (old_value if row[0] is frame else row[1].get()).strip()]
+            target=old_rows[self.chat_index%len(old_rows)] if old_rows else None
+            if target and target[0] is not frame and target[1].get().strip()==pending['spec'][1]['text']:
+                live_rows=[row for row in self.chat_rows if row[1].get().strip()]
+                next_index=live_rows.index(target)
+            else:
+                self.invalidate_pending_chat()
+        self.chat_index=next_index
+        self.sync_chat_timer()
+        self.schedule_save()
+    def update_chat_count(self,item):
+        _,var,counter,_,_=item
+        value=var.get();size=len(value.strip().encode('utf-8'))
+        counter.configure(text=f"{len(value)} {self.language.t('字符')} · {size}/{CHAT_BYTE_LIMIT} {self.language.t('字节')}",fg=RED if size>CHAT_BYTE_LIMIT else MUTED)
+    def layout_chat_rows(self):
+        for i,(frame,_,_,up,down) in enumerate(self.chat_rows):
+            frame.grid(row=i,column=0,sticky='ew')
+            up.state(['disabled'] if i==0 else ['!disabled'])
+            down.state(['disabled'] if i==len(self.chat_rows)-1 else ['!disabled'])
+        self.chat_rows_frame.columnconfigure(0,weight=1)
+    def move_chat_row(self,frame,step):
+        i=next(i for i,item in enumerate(self.chat_rows) if item[0] is frame);j=i+step
+        if 0<=j<len(self.chat_rows):
+            self.invalidate_pending_chat()
+            self.chat_rows[i],self.chat_rows[j]=self.chat_rows[j],self.chat_rows[i]
+            self.sync_chat_timer();self.chat_index=0;self.layout_chat_rows();self.schedule_save()
+    def remove_chat_row(self,frame):
+        self.invalidate_pending_chat()
+        self.chat_rows[:]=[item for item in self.chat_rows if item[0] is not frame]
+        frame.destroy()
+        if not self.chat_rows:self.add_chat_row('',redraw=False)
+        self.sync_chat_timer();self.chat_index=0;self.layout_chat_rows();self.schedule_save()
+    def chat_playlist(self):
+        entries=[v.get().strip() for _,v,_,_,_ in self.chat_rows if v.get().strip()]
+        if not entries:raise ValueError('请先输入喊话内容')
+        for text in entries:chat_command(text,self.chat_team.get()=='team')
+        return entries
+    def send_chat(self):
+        try:entries=self.chat_playlist()
+        except ValueError as exc:self.log(str(exc),True);return False
+        i=self.chat_index%len(entries)
+        if self.request('chat',text=entries[i],team=self.chat_team.get()=='team'):
+            if self._capturing_wait is None:self.chat_index=(i+1)%len(entries)
+            return True
+        return False
+    def timer_chat(self):
+        enabled=self.vars['chat'].get()
+        try:data=self.chat_timer_inputs() if enabled else {'enabled':False}
+        except ValueError as exc:
+            self.vars['chat'].set(False);self.log(str(exc),True);return False
+        return self.request('chat_timer',**data)
+    def bot_count_watch_command(self):
+        try:count=bounded_int(self.vars['bot_count'].get(),0,64,'人机数量')
+        except ValueError:return ''
+        return 'bot_quota_mode normal; bot_quota '+str(count)
+    def wrap_listener_button(self,button):
+        from tkinter import font as tkfont
+        caption=getattr(button,'_listener_caption',None)
+        if caption is None:return
+        font=tkfont.Font(root=self.root,font=ttk.Style(self.root).lookup(button.cget('style') or 'TButton','font') or 'TkDefaultFont')
+        available=button.winfo_width()-28 if button.winfo_width()>=45 else getattr(button,'_listener_max_width',280)
+        if isinstance(button,ttk.Checkbutton):
+            available=min(getattr(button,'_listener_max_width',280),max(80,button.master.winfo_width()-32))
+        limit=max(30,min(available,getattr(button,'_listener_max_width',available)))
+        output=[]
+        for line in caption.split('\n'):
+            rest=line
+            while rest and font.measure(rest)>limit:
+                cut=1
+                while cut<len(rest) and font.measure(rest[:cut+1])<=limit:cut+=1
+                space=rest.rfind(' ',0,cut+1)
+                if space>0:cut=space
+                output.append(rest[:cut].rstrip());rest=rest[cut:].lstrip()
+            output.append(rest)
+        rendered='\n'.join(output)
+        if str(button.cget('text'))!=rendered:button.configure(text=rendered)
+    def set_listener_caption(self,button,text,style):
+        button._listener_caption=text
+        button.configure(text=text,style=style)
+        self.wrap_listener_button(button)
+    def round_button(self,parent,title,get_command,token):
+        frame=tk.Frame(parent,bg=CARD)
+        button=ttk.Button(frame,text=title,width=14,style='Small.TButton',command=lambda:self.click_round_button(token))
+        button._ui_literal=True
+        button.grid(row=0,column=0,sticky='nsew')
+        arrow=ttk.Button(frame,text='▼',width=2,style='WatchArrow.TButton',command=lambda:self.round_button_menu(token))
+        arrow.grid(row=0,column=1,sticky='')
+        frame.columnconfigure(0,weight=1)
+        frame.columnconfigure(1,minsize=30)
+        button.bind('<Configure>',lambda e,w=button:self.wrap_listener_button(w))
+        style=ttk.Style(self.root)
+        if not getattr(self,'_watch_arrow_styles',False):
+            for name,bg,hover in (('WatchArrow.TButton','#34495d','#47617b'),('WatchArrowOn.TButton','#17644f','#217c63')):
+                style.configure(name,font=('Segoe UI Symbol',10),padding=(5,5),foreground='#ffffff',background=bg)
+                style.map(name,foreground=[('active','#ffffff')],background=[('active',hover)])
+            self._watch_arrow_styles=True
+        self.round_buttons[token]=(button,arrow,title,get_command)
+        return frame
+    def round_button_menu(self,token):
+        button,arrow,title,get_command=self.round_buttons[token]
+        menu=tk.Menu(self.root,tearoff=False,bg='#202e3c',fg='#f5f8fb',activebackground='#246452',
+                     activeforeground='white',font=('Microsoft YaHei UI',11),borderwidth=1)
+        selected='off' if token not in self.round_enabled else 'once' if token in self.round_once else 'every'
+        for mode,title in (('once','新对局仅发送一次'),('every','每次对局都发送'),('off','停用功能')):
+            mark='  ✓' if mode==selected else ''
+            menu.add_command(label=self.language.t(title)+mark,command=lambda m=mode:self.set_round_watch(token,m!='off',m))
+        menu.bind('<Unmap>',lambda _:menu.after_idle(menu.destroy))
+        try:menu.tk_popup(arrow.winfo_rootx(),arrow.winfo_rooty()+arrow.winfo_height())
+        finally:
+            if menu.winfo_exists():menu.grab_release()
+    def click_round_button(self,token):
+        if token in self.round_enabled:return self.set_round_watch(token,False)
+        if not self.ready:return self.set_round_watch(token,True,'once')
+        return self.send_round_once(token)
+    def send_round_once(self,token):
+        command=self.round_buttons[token][3]().strip()
+        if not self.ready or not self.command_states.get(command,{}).get('available',False):return False
+        if self.send_command(command):
+            if token in self.round_once:self.set_round_watch(token,False)
+            elif token in self.round_enabled:self.round_sent.add(token)
+            self.refresh_round_buttons()
+            return True
+        return False
+    def capture_first_round(self):
+        if not self.ready or not self.round_snapshot_ready or self.round_view is None:return
+        for token,marker in list(self.round_barriers.items()):
+            if not marker.startswith('first:'):continue
+            old_epoch=self.round_skip.pop(token,None)
+            same_epoch=old_epoch is None or old_epoch==('first',self.epoch)
+            scope=marker[6:]
+            same_context=scope==self.round_scope if scope and self.round_scope else same_epoch
+            if same_context:
+                self.round_barriers[token]=round_identity_marker(self.round_view,self.round_session)
+            else:
+                self.round_barriers.pop(token,None)
+            self.schedule_save()
+    def set_round_watch(self,token,enabled,mode='every',restoring=False):
+        if enabled:
+            text=self.round_buttons[token][3]().strip()
+            try:command_bytes(text)
+            except ValueError as exc:self.log(str(exc),True);return False
+            group=ROUND_COMMAND_GROUPS.get(text,text.split(maxsplit=1)[0])
+            for other in tuple(self.round_enabled):
+                previous=self.round_buttons[other][3]().strip()
+                if previous and ROUND_COMMAND_GROUPS.get(previous,previous.split(maxsplit=1)[0])==group and other!=token:
+                    self.round_enabled.discard(other);self.round_sent.discard(other)
+                    self.round_once.discard(other);self.round_skip.pop(other,None);self.round_barriers.pop(other,None);self.cancel_listener('command:'+other)
+            previous='off' if token not in self.round_enabled else 'once' if token in self.round_once else 'every'
+            self.round_enabled.add(token)
+            if mode=='once':
+                self.round_once.add(token)
+                if self.ready and previous!='once' and not restoring:
+                    if self.round_snapshot_ready and self.round_view is not None:
+                        self.round_skip[token]=self.round_view
+                        self.round_barriers[token]=round_identity_marker(self.round_view,self.round_session)
+                    else:
+                        self.round_skip[token]=('first',self.epoch)
+                        self.round_barriers[token]='first:'+(self.round_scope or '')
+            else:
+                self.round_barriers.pop(token,None)
+                self.round_once.discard(token);self.round_skip.pop(token,None)
+            if previous!=mode:self.round_sent.discard(token)
+        else:
+            self.round_barriers.pop(token,None)
+            self.round_enabled.discard(token);self.round_sent.discard(token)
+            self.round_once.discard(token);self.round_skip.pop(token,None)
+        if enabled:self.arm_listener('command:'+token,'command',dict(text=text),'once' if mode=='once' else 'every',self.round_skip.get(token))
+        else:self.cancel_listener('command:'+token)
+        self.refresh_round_buttons();self.schedule_save()
+        return True
+    def refresh_round_buttons(self,force=False):
+        for token,(button,arrow,title,_) in self.round_buttons.items():
+            active=token in self.round_enabled;job=self.listeners.jobs.get('command:'+token)
+            note='监听中，等待进入游戏'
+            if active and self.ready:
+                note={'matched':'本局已符合','submitted':'本局已提交','queued':'已提交，等待处理','failed':'未确认，等待下一局'}.get(job['state'] if job else '', '等待自动应用')
+                barrier=self.round_barriers.get(token,'')
+                if (token in self.round_skip and self.round_skip[token]==self.round_view) or (barrier and (barrier.startswith('first:') or barrier==round_identity_marker(self.round_view,self.round_session))):note='等待新对局'
+            caption=self.language.t(title)
+            if active:
+                caption+='\n'+self.language.t('新对局仅一次' if token in self.round_once else '每局监听中')+'\n'+self.language.t(note)
+                if token in ('@manual','@catalog') and not self.ready:caption=self.language.t('发送指令')+'\n'+self.language.t(note)
+            state=(caption,active)
+            if not force and getattr(button,'_round_view',None)==state:continue
+            button._round_view=state
+            self.set_listener_caption(button,caption,'Running.TButton' if active else 'Small.TButton')
+            arrow.configure(style='WatchArrowOn.TButton' if active else 'WatchArrow.TButton')
+    def restore_scope_preferences(self,settings):
+        self.player_scopes=self.read_player_scopes(settings)
+        saved=settings.get('scope_lock_modes',{})
+        for field in ('hp','money'):
+            self.vars[field+'_lock_mode'].set(isinstance(saved,dict) and saved.get(field) is True)
+        self.refresh_scope_menus()
+    def load_round_buttons(self,settings):
+        for key in list(self.listeners.jobs):
+            if key.startswith(('command:','scan:')):self.cancel_listener(key)
+        self.round_enabled.clear();self.round_sent.clear();self.round_once.clear();self.round_skip.clear()
+        self.round_barriers.clear()
+        active=settings.get('mode_watches',[])
+        self.mode_watches={k for k in ('zeta','heroes') if isinstance(active,list) and k in active}
+        self.waiting_controls.clear()
+        self.zeta_scan_identity=None
+        self.zeta_scan_done.clear()
+        fixed=settings.get('round_quick',[])
+        custom=settings.get('round_custom_rows',[])
+        once_fixed=settings.get('round_quick_once',[])
+        once_rows=settings.get('round_custom_once',[])
+        if not isinstance(once_fixed,list):once_fixed=[]
+        if not isinstance(once_rows,list):once_rows=[]
+        if isinstance(fixed,list):
+            for token in fixed:
+                if isinstance(token,str) and token in self.round_buttons and token not in ('@manual','@catalog'):
+                    self.set_round_watch(token,True,'once' if token in once_fixed else 'every',restoring=True)
+        if isinstance(custom,list):
+            for index in custom:
+                if type(index) is int and 0<=index<len(self.custom):self.set_round_watch(str(self.custom[index][2]),True,'once' if index in once_rows else 'every',restoring=True)
+        fixed_barriers=settings.get('round_fixed_barriers',{})
+        custom_barriers=settings.get('round_custom_barriers',{})
+        def restore(token,value):
+            if token in self.round_once and isinstance(value,str) and re.fullmatch(r'(?:[0-9a-f]{64}|first:(?:[0-9a-f]{64})?)',value):
+                self.round_barriers[token]=value;self.round_skip.pop(token,None)
+        if isinstance(fixed_barriers,dict):
+            for token,value in fixed_barriers.items():restore(token,value)
+        if isinstance(custom_barriers,dict):
+            for i,item in enumerate(self.custom):restore(str(item[2]),custom_barriers.get(str(i)))
+        self.refresh_round_buttons()
     def build_commands(self):
         page=self.pages['commands'];self.command_tabs=ttk.Notebook(page);self.command_tabs.pack(fill='both',expand=True)
         quick=ScrollFrame(self.command_tabs);custom=ScrollFrame(self.command_tabs)
@@ -5793,24 +7073,25 @@ class App:
         self.command_tabs.add(quick,text='默认');self.command_tabs.add(custom,text='自定义');self.command_tabs.add(catalog,text='更多命令')
         box=self.card(quick.body,'人机操作')
         row=tk.Frame(box,bg=CARD);row.pack(fill='x',pady=(0,7))
-        label(row,'人机数量').pack(side='left');ttk.Entry(row,textvariable=self.strvar('bot_count',10),width=6).pack(side='left',padx=8)
-        self.feature_control(ttk.Button(row,text='设置数量',style='Small.TButton',command=self.set_bot_count),'commands',lambda:'bot_quota_mode normal; bot_quota '+self.vars['bot_count'].get()).pack(side='left')
-        label(row,'难度').pack(side='left',padx=(20,7))
-        self.difficulty=ttk.Combobox(row,state='readonly',width=10,values=['0 简单','1 普通偏易','2 普通','3 较难','4 困难','5 很难','6 专家','7 精英']);self.difficulty.current(7);self.difficulty.pack(side='left')
+        label(row,'人机数量').grid(row=0,column=0,sticky='w');ttk.Entry(row,textvariable=self.strvar('bot_count',10),width=6).grid(row=0,column=1,sticky='w',padx=8,pady=4)
+        self.round_button(row,'设置数量',self.bot_count_watch_command,'@count').grid(row=0,column=2,sticky='w',padx=8,pady=4)
+        label(row,'难度').grid(row=1,column=0,sticky='w')
+        self.difficulty=ttk.Combobox(row,state='readonly',width=10,values=['0 简单','1 普通偏易','2 普通','3 较难','4 困难','5 很难','6 专家','7 精英']);self.difficulty.current(7);self.difficulty.grid(row=1,column=1,sticky='w',padx=8,pady=4)
         difficulty=self.settings.get('difficulty',7)
         if type(difficulty) is int and 0<=difficulty<=7:self.difficulty.current(difficulty)
         self.difficulty.bind('<<ComboboxSelected>>',self.schedule_save,add='+')
-        self.feature_control(ttk.Button(row,text='设置难度',style='Small.TButton',command=lambda:self.send_command('bot_difficulty '+str(self.difficulty.current()))),'commands',lambda:'bot_difficulty '+str(self.difficulty.current())).pack(side='left',padx=8)
+        self.round_button(row,'设置难度',lambda:'bot_difficulty '+str(self.difficulty.current()),'@difficulty').grid(row=1,column=2,sticky='w',padx=8,pady=4)
         grid=tk.Frame(box,bg=CARD);grid.pack(fill='x')
         actions=[('加一人机','bot_add'),('删除人机','bot_kick'),('处死人机','bot_kill'),('刷新游戏','mp_restartgame 1'),('加入 T 人机','bot_add_t'),('加入 CT 人机','bot_add_ct'),('暂停人机','bot_stop 1'),('恢复人机','bot_stop 0')]
         for i,(title,command) in enumerate(actions):
-            self.feature_control(ttk.Button(grid,text=title,style='Accent.TButton',command=lambda c=command:self.send_command(c)),'commands',lambda c=command:c).grid(row=i//4,column=i%4,sticky='ew',padx=4,pady=5)
+            widget=self.round_button(grid,title,lambda c=command:c,command)
+            widget.grid(row=i//4,column=i%4,sticky='ew',padx=4,pady=5)
         for col in range(4):grid.columnconfigure(col,weight=1,uniform='actions')
         box=self.card(quick.body,'常用指令')
         actions=[('进入观战','jointeam 1'),('开启队友伤害','mp_friendlyfire 1'),('关闭队友伤害','mp_friendlyfire 0'),('BOT 语音关闭','bot_chatter off'),('人机只用刀','bot_knives_only'),('恢复所有武器','bot_all_weapons')]
         for i,(title,command) in enumerate(actions):
             if i%3==0:row=tk.Frame(box,bg=CARD);row.pack(fill='x',pady=4)
-            self.feature_control(ttk.Button(row,text=title,style='Small.TButton',command=lambda c=command:self.send_command(c)),'commands',lambda c=command:c).pack(side='left',fill='x',expand=True,padx=4)
+            self.round_button(row,title,lambda c=command:c,command).pack(side='left',fill='both',expand=True,padx=4)
         self.custom_body=custom.body
         toolbar=tk.Frame(custom.body,bg=BG);toolbar.pack(fill='x',pady=(7,6))
         label(toolbar,'说明',True,9,bg=BG,width=17).pack(side='left',padx=(8,0));label(toolbar,'指令',True,9,bg=BG).pack(side='left')
@@ -5821,11 +7102,13 @@ class App:
         for entry in entries[:200]:
             if isinstance(entry,(list,tuple)) and len(entry)==2:self.add_custom(str(entry[0]),str(entry[1]))
         row=tk.Frame(page,bg=CARD,padx=9,pady=8);row.pack(side='bottom',fill='x',pady=(8,0),before=self.command_tabs)
-        label(row,'临时指令').pack(side='left',padx=(0,8));self.manual_command=tk.StringVar()
-        entry=ttk.Entry(row,textvariable=self.manual_command);entry.pack(side='left',fill='x',expand=True)
-        entry.bind('<Return>',lambda _:self.send_command(self.manual_command.get()))
-        self.feature_control(ttk.Button(row,text='发送',style='Accent.TButton',command=lambda:self.send_command(self.manual_command.get())),'commands',lambda:self.manual_command.get()).pack(side='left',padx=7)
-        ttk.Button(row,text='存为自定义',style='Small.TButton',command=self.store_manual).pack(side='left')
+        row.columnconfigure(1,weight=1)
+        label(row,'临时指令').grid(row=0,column=0,sticky='w',padx=(0,8));self.manual_command=tk.StringVar()
+        entry=ttk.Entry(row,textvariable=self.manual_command,width=1);entry.grid(row=0,column=1,sticky='ew')
+        entry.bind('<Return>',lambda _:self.click_round_button('@manual'))
+        self.round_button(row,'发送指令',self.manual_command.get,'@manual').grid(row=0,column=2,padx=7)
+        self.manual_command.trace_add('write',lambda *_:self.set_round_watch('@manual',False) if '@manual' in self.round_enabled else None)
+        ttk.Button(row,text='存为自定义',style='Small.TButton',command=self.store_manual).grid(row=0,column=3,sticky='e')
     def set_bot_count(self):
         try:value=bounded_int(self.vars['bot_count'].get(),0,64,'BOT 数量')
         except ValueError as ex:self.log(str(ex),True);return
@@ -5833,14 +7116,19 @@ class App:
     def add_custom(self,title,command):
         frame=tk.Frame(self.custom_rows,bg=CARD,highlightbackground=BORDER,highlightthickness=1);frame.pack(fill='x',pady=(0,5))
         name=tk.StringVar(value=title);value=tk.StringVar(value=command);item=(frame,name,value);self.custom.append(item)
-        ttk.Entry(frame,textvariable=name,width=13).pack(side='left',padx=(7,8),pady=6)
-        ttk.Entry(frame,textvariable=value).pack(side='left',fill='x',expand=True,pady=6)
-        self.feature_control(ttk.Button(frame,text='发送',style='Accent.TButton',command=lambda:self.send_command(value.get())),'commands',lambda v=value:v.get()).pack(side='left',padx=7)
-        ttk.Button(frame,text='×',width=2,style='Small.TButton',command=lambda:self.delete_custom(item)).pack(side='left',padx=(0,7))
+        frame.columnconfigure(1,weight=1)
+        ttk.Entry(frame,textvariable=name,width=13).grid(row=0,column=0,padx=(7,8),pady=6)
+        ttk.Entry(frame,textvariable=value,width=1).grid(row=0,column=1,sticky='ew',pady=6)
+        token=str(value)
+        self.round_button(frame,'发送',value.get,token).grid(row=0,column=2,padx=7,pady=4)
+        value.trace_add('write',lambda *_:self.set_round_watch(token,False) if token in self.round_enabled else None)
+        ttk.Button(frame,text='×',width=2,style='Small.TButton',command=lambda:self.delete_custom(item)).grid(row=0,column=3,padx=(0,7))
         if self.language.widgets:self.language.capture(frame)
         for var in (name,value):self.watch_setting(var)
         self.schedule_save()
     def delete_custom(self,item):
+        token=str(item[2]);self.round_enabled.discard(token);self.round_sent.discard(token);self.round_once.discard(token);self.round_skip.pop(token,None);self.round_barriers.pop(token,None);self.round_buttons.pop(token,None)
+        self.cancel_listener('command:'+token)
         self.custom.remove(item);item[0].destroy();self.schedule_save()
     def build_catalog(self):
         page=self.pages['catalog'];line=tk.Frame(page,bg=BG);line.pack(fill='x',pady=(0,10))
@@ -5849,7 +7137,7 @@ class App:
         self.catalog_count=label(page,'',True,9,bg=BG);self.catalog_count.pack(anchor='w',pady=(0,8))
         f=tk.Frame(page,bg=INPUT);f.pack(fill='both',expand=True)
         self.catalog_tree=ttk.Treeview(f,columns=('name','kind','desc'),show='headings',height=6)
-        for key,title,width in [('name','命令 / 变量',245),('kind','类型',65),('desc','说明',440)]:
+        for key,title,width in [('name','命令 / 变量',245),('kind','类型',120),('desc','说明',440)]:
             self.catalog_tree.heading(key,text=title);self.catalog_tree.column(key,width=width,minwidth=50,stretch=key=='desc')
         bar=ttk.Scrollbar(f,orient='vertical',command=self.catalog_tree.yview);self.catalog_tree.configure(yscrollcommand=bar.set)
         bar.pack(side='right',fill='y');self.catalog_tree.pack(fill='both',expand=True)
@@ -5858,9 +7146,11 @@ class App:
         self.detail=label(detail,'输入名称或中文功能关键词搜索。选择一项后可查看原生帮助。',True,9,wraplength=750,justify='left');self.detail.pack(anchor='w',padx=12,pady=(8,6))
         detail.bind('<Configure>',lambda e:self.detail.configure(wraplength=max(200,e.width-26)))
         line=tk.Frame(detail,bg=CARD);line.pack(fill='x',padx=15,pady=(0,13))
-        self.catalog_command=tk.StringVar();ttk.Entry(line,textvariable=self.catalog_command).pack(side='left',fill='x',expand=True)
-        self.feature_control(ttk.Button(line,text='发送',style='Accent.TButton',command=lambda:self.send_command(self.catalog_command.get())),'commands',lambda:self.catalog_command.get()).pack(side='left',padx=(10,8))
-        ttk.Button(line,text='存为自定义',style='Small.TButton',command=self.catalog_to_custom).pack(side='left')
+        line.columnconfigure(0,weight=1)
+        self.catalog_command=tk.StringVar();ttk.Entry(line,textvariable=self.catalog_command,width=1).grid(row=0,column=0,sticky='ew')
+        self.round_button(line,'发送指令',self.catalog_command.get,'@catalog').grid(row=0,column=1,padx=(10,8))
+        self.catalog_command.trace_add('write',lambda *_:self.set_round_watch('@catalog',False) if '@catalog' in self.round_enabled else None)
+        ttk.Button(line,text='存为自定义',style='Small.TButton',command=self.catalog_to_custom).grid(row=0,column=2,sticky='e')
         self.search.trace_add('write',self.schedule_filter);self.category.trace_add('write',self.schedule_filter);self.filter_catalog()
     def schedule_filter(self,*_):
         if self.filter_job:self.root.after_cancel(self.filter_job)
@@ -5897,12 +7187,41 @@ class App:
     def send_command(self,text):
         try:command_bytes(text)
         except ValueError as ex:self.log(str(ex),True);return
-        self.request('command',text=text.strip())
+        return self.request('command',text=text.strip())
     def request(self,action,require_ready=True,**data):
+        if self._capturing_wait is not None:
+            try:
+                if action=='mutation_add':bounded_int(data['count'],1,10,'单次增加次数')
+                elif action=='heroes_auto' and data.get('enabled'):bounded_float(data.get('seconds',3),0,3600,'怪物死亡倒计时')
+                elif action=='chat_timer' and data.get('enabled'):bounded_float(data['interval'],1,3600,'喊话间隔')
+                elif action=='heroes' and data.get('operation')=='jump':bounded_int(data.get('wave'),1,100000,'跳转波次')
+            except ValueError as exc:self.log(str(exc),True);return False
+            self._captured_request=(action,dict(data));return True
         configuration=action in ('bot_skin_catalog','bot_skin_rule','bot_skin_batch','host_watch','skin_plan','skin_panel_watch') or (action=='ghost' and 'key' not in data)
         if configuration:require_ready=False
         if action in ('stop','disconnect'):self.auto_connect=False
-        elif action=='connect':self.auto_connect=True;self.ensure_worker()
+        elif action=='connect':self.auto_connect=True;self.ensure_worker();self.listeners.context_lost();self.publish_listener_versions()
+        if require_ready and not self.ready and action in ROUND_FEATURE_KEYS:
+            enabled=bool(data['enabled'])
+            prefs=dict(self.feature_preferences)
+            cheats=self.cheats_desired
+            if action=='cheats':cheats=enabled
+            elif action=='scale' and enabled:
+                setting={k:data[k] for k in ('head','body','uniform','factor')}
+                try:model_scale_setting(**setting)
+                except ValueError as exc:
+                    self.apply_capabilities();self.log(str(exc),True);return False
+                prefs[action]=setting
+            else:prefs[action]=enabled
+            if self.worker and self.auto_connect:
+                if not self.worker.submit('each_round',enabled=self.vars['each_round'].get(),cheats=cheats,features=dict(prefs)):
+                    self.apply_capabilities();return False
+            self.feature_preferences=prefs;self.cheats_desired=cheats
+            if enabled:self.arm_listener('preference:'+action,action,data)
+            else:self.cancel_listener('preference:'+action)
+            self.schedule_save()
+            return True
+        if action in ROUND_FEATURE_KEYS and self.ready:self.cancel_listener('preference:'+action)
         if require_ready and not self.ready:
             if action=='cheats':self.vars['cheats'].set(self.last_cheats)
             self.log('请先连接游戏并进入对局',True);self.reset_flags();return
@@ -5940,9 +7259,16 @@ class App:
         self.worker=Worker(self.events,DATA['caps']);self.worker.each_round=self.vars['each_round'].get();self.worker.cheats_desired=self.cheats_desired
         self.worker.feature_preferences=dict(self.feature_preferences)
         self.worker.round_teleports.configure(self.teleport_preferences());self._teleport_sent=self.teleport_preferences()
-        self.worker.configure_host_watch(self.host_preferences());self.worker.start()
+        self.worker.configure_host_watch(self.host_preferences());self.listeners.context_lost();self.publish_listener_versions();self.worker.start()
         self.log('连接工作线程已恢复，继续自动发现游戏。');return True
     def stop(self):
+        self.listeners.clear();self.publish_listener_versions()
+        self.player_scopes={k:'selected' for k in self.player_scopes};self.refresh_scope_menus()
+        self.mode_watches.clear()
+        self.waiting_controls.clear()
+        self.zeta_scan_identity=None
+        self.zeta_scan_done.clear()
+        self.round_enabled.clear();self.round_sent.clear();self.round_once.clear();self.round_skip.clear();self.round_barriers.clear();self.refresh_round_buttons()
         self.invulnerable_targets.clear();self.ghost_targets.clear()
         for key in ('hp_lock_mode','money_lock_mode','invulnerable_mode'):self.vars[key].set(False)
         for var in self.teleport_modes.values():var.set(False)
@@ -6011,11 +7337,29 @@ class App:
         self.resize_player_columns();self.draw_selection()
     def poll(self):
         try:
+            self.poll_once();self._poll_error=None
+        except Exception as exc:
+            error=type(exc).__name__
+            if error!=getattr(self,'_poll_error',None):self.log(self.language.t('界面状态刷新失败')+': '+error,True)
+            self._poll_error=error
+        finally:
+            try:
+                if self.root.winfo_exists():self.root.after(100,self.poll)
+            except tk.TclError:pass
+    def poll_once(self):
+        try:
             while True:
                 kind,data=self.events.get_nowait()
                 if kind=='state':
                     old_epoch=self.epoch
+                    self.round_scope=data.get('round_scope')
                     self.capabilities=data.get('capabilities',{});self.command_states=data.get('command_status',{})
+                    if self.ready!=data['ready'] or old_epoch!=data.get('epoch',-1):
+                        for name in ('ammo','scale','buy'):self.vars[name].set(False)
+                        self.round_snapshot_ready=False;self.round_matched.clear();self.listeners.context_lost();self.publish_listener_versions()
+                        self.zeta_scan_identity=None;self.zeta_scan_done.clear()
+                        self.refresh_zeta_choices()
+                    self.runtime_revision=data.get('runtime_revision',self.runtime_revision)
                     self.ready=data['ready'];self.epoch=data.get('epoch',-1);self.status.configure(text=('●  ' if self.ready else '○  ')+data['text'],fg=GREEN if self.ready else MUTED)
                     if old_epoch!=self.epoch:
                         self.waiting_roster=None
@@ -6032,6 +7376,16 @@ class App:
                         self.update_players([])
                     if 'cheats' in data:self.last_cheats=data['cheats'];self.vars['cheats'].set(data['cheats'])
                     self.refresh_skin_buttons()
+                elif kind=='round_buttons_state':
+                    if self.ready and data['epoch']==self.epoch:
+                        identity=data.get('round')
+                        self.round_session=data.get('session')
+                        self.round_snapshot_ready=identity is not None
+                        if identity is not None and self.round_view!=identity:
+                            self.round_view=identity;self.round_sent.clear()
+                        self.capture_first_round()
+                        self.round_matched=set(data.get('matched',()))
+                elif kind=='listener_result':self.listener_result(data)
                 elif kind=='connection':
                     self.needs_admin=bool(data.get('requires_admin'));self.connect_button.configure(text='管理员连接' if self.needs_admin else '连接游戏')
                     self.status.configure(text='○ '+('连接受阻 · 需要管理员权限 · 自动重试中' if self.needs_admin and data.get('retrying') else data['text']),fg=MUTED if data.get('connected') or data.get('retrying') or data.get('pending') else RED)
@@ -6043,8 +7397,11 @@ class App:
                         self.waiting_roster=None
                         for var in self.teleport_modes.values():var.set(False)
                         self.checked.clear();self.update_players([])
-                    self.reset_flags();self.machine_rows=[];self.machine_choice.set('');self.machine_box.configure(values=[])
-                    self.bio_status.configure(text='进入生化 ZETA 后可读取次数和机器列表。')
+                    self.reset_flags()
+                    self.refresh_zeta_choices()
+                    self.zeta_scan_identity=None
+                    self.zeta_scan_done.clear()
+                    self.bio_status.configure(text=self.language.t('先选择技能并点击指定；进入 ZETA 后，下一次按原生突变键取得所选技能。'))
                     self.heroes_damage_note.configure(text='当前使用原生伤害')
                     self.update_heroes_models([]);self.update_heroes_levels([]);self.vars['heroes_temple'].set(False);self.heroes_status.configure(text='仅本地房主的洛奇英雄传对局可用。')
                 elif kind=='host_watch':
@@ -6065,10 +7422,10 @@ class App:
                 elif kind=='heroes_state':
                     self.heroes_status.configure(text=data['text']);self.vars['heroes_temple'].set(data['protected'])
                 elif kind=='bio_state':self.bio_status.configure(text=data['text'])
-                elif kind=='machines':
-                    self.machine_rows=data['rows'];self.machine_box.configure(values=[f'#{r.key.index} · 技能 {r.skill} · '+('已启用' if r.enabled else '未启用') for r in self.machine_rows])
-                    if self.machine_rows:self.machine_box.current(0)
-                    else:self.machine_choice.set('当前地图没有变异机器')
+                elif kind=='listener_progress':
+                    job=self.listeners.jobs.get(data['listener'])
+                    if job and job['revision']==data['revision'] and job['dispatch']==data['dispatch']:job['state']=data['state']
+                elif kind in ('machines','machine_scan_error'):pass
                 elif kind=='invulnerability_targets':
                     self.invulnerable_targets=set(data['keys']);self.vars['invulnerable_auto'].set(data['auto']);self.refresh_invulnerability_ui()
                 elif kind=='ghost_targets':
@@ -6080,10 +7437,10 @@ class App:
                         if self.persist_logs:HostLogArchive.sweep(self.path)
                         self.root.destroy();return
         except queue.Empty:pass
+        self.advance_listeners()
         self.apply_capabilities()
         if not self.closing and self.auto_connect and self.ensure_worker():
             self.request('connect',require_ready=False,game=self.game_directory)
-        if self.root.winfo_exists():self.root.after(100,self.poll)
     def write_skin_trace(self,record):
         if not self.persist_logs:return
         # Fixed technical fields, written into the same total-log package.
@@ -6108,14 +7465,33 @@ class App:
                 HostLogArchive.append(self.path.with_suffix('.run.log'),time.strftime('%Y-%m-%d %H:%M:%S')+(' [错误] ' if error else ' [操作] ')+text.replace('\n',' | ')+'\n')
             except OSError:self.hint.configure(text=preview+'（日志文件无法写入）',fg=RED)
     def collect_settings(self):
-        settings={k:self.vars[k].get() for k in ('hp_value','money_value','head','body','model_scale','scale_uniform','invulnerable_auto','interval','chat_team','bot_count','mutation_count','heroes_wave','heroes_seconds','heroes_atk','heroes_hp','heroes_damage_value','each_round')}
+        settings={k:self.vars[k].get() for k in ('hp_value','money_value','head','body','model_scale','scale_uniform','invulnerable_auto','interval','chat_team','bot_count','mutation_count','mutation_points','heroes_wave','heroes_seconds','heroes_atk','heroes_hp','heroes_damage_value','each_round')}
+        index=self.zeta_skill_box.current()
+        settings['zeta_selected_skill']=ZETA_SKILLS[index]['id'] if 0<=index<len(ZETA_SKILLS) else None
         for field in ('heroes_atk','heroes_hp'):settings[field]=self.language.source(settings[field])
         settings['custom']=[[name.get(),value.get()] for _,name,value in self.custom]
         settings['game_directory']=self.game_directory
         settings.update({key+'_mode':mode for key,mode in self.action_modes.items()})
-        settings['chat_text']=self.chat_text.get('1.0','end-1c')
+        settings['chat_entries']=[var.get() for _,var,_,_,_ in self.chat_rows]
         settings['cheats_desired']=self.cheats_desired;settings['difficulty']=self.difficulty.current()
         settings['feature_preferences']=dict(self.feature_preferences)
+        settings['player_scopes']=dict(self.player_scopes)
+        settings['scope_lock_modes']={k:bool(self.vars[k+'_lock_mode'].get()) for k in ('hp','money')}
+        settings['pending_features']={k.split(':',1)[1]:j['spec'][1] for k,j in self.listeners.jobs.items() if k.startswith('preference:')}
+        settings['feature_listeners']=[]
+        for key,job in self.listeners.jobs.items():
+            action,data,mode,_skip=job['spec']
+            if not key.startswith('feature:') or 'key' in data or 'keys' in data:continue
+            saved_data={'enabled':True} if action=='chat_timer' else data
+            settings['feature_listeners'].append(dict(id=key,action=action,data=saved_data,mode=mode))
+        settings['mode_watches']=sorted(self.mode_watches)
+        custom_tokens={str(item[2]) for item in self.custom}
+        settings['round_quick']=sorted(self.round_enabled-custom_tokens-{'@manual','@catalog'})
+        settings['round_quick_once']=sorted(self.round_once-custom_tokens-{'@manual','@catalog'})
+        settings['round_custom_once']=[i for i,item in enumerate(self.custom) if str(item[2]) in self.round_once]
+        settings['round_custom_rows']=[i for i,item in enumerate(self.custom) if str(item[2]) in self.round_enabled]
+        settings['round_fixed_barriers']={token:value for token,value in self.round_barriers.items() if token in self.round_once and token not in custom_tokens|{'@manual','@catalog'}}
+        settings['round_custom_barriers']={str(i):self.round_barriers[str(item[2])] for i,item in enumerate(self.custom) if str(item[2]) in self.round_once and str(item[2]) in self.round_barriers}
         settings['host_watch']=self.host_preferences();settings['skin_selected']=dict(self.skin_selected)
         if self.skin_position is not None:settings['skin_dialog_position']=list(self.skin_position)
         return settings
@@ -6126,13 +7502,8 @@ class App:
             if value!=previous[0]:previous[0]=value;self.schedule_save()
         var.trace_add('write',changed)
     def watch_settings(self):
-        for key in ('hp_value','money_value','head','body','model_scale','scale_uniform','invulnerable_auto','interval','chat_team','bot_count','mutation_count','heroes_wave','heroes_seconds','heroes_atk','heroes_hp','heroes_damage_value','each_round'):
+        for key in ('hp_value','money_value','head','body','model_scale','scale_uniform','invulnerable_auto','interval','chat_team','bot_count','mutation_count','mutation_points','heroes_wave','heroes_seconds','heroes_atk','heroes_hp','heroes_damage_value','each_round'):
             self.watch_setting(self.vars[key])
-        self.chat_text.edit_modified(False)
-        def changed(_):
-            if self.chat_text.edit_modified():
-                self.chat_text.edit_modified(False);self.schedule_save()
-        self.chat_text.bind('<<Modified>>',changed,add='+')
     def schedule_save(self,*_):
         if self.settings_loading or self.closing:return
         now=time.monotonic()
@@ -6150,10 +7521,12 @@ class App:
         except Exception as ex:self.log('自动保存失败：'+str(ex),True);return False
     def load_settings_into_ui(self,settings):
         defaults=dict(hp_value='9999',money_value='99999',head='1',body='1',model_scale='1',scale_uniform=False,
-                      invulnerable_auto=True,interval='10',chat_team='all',bot_count='10',mutation_count='1',heroes_wave='1',heroes_seconds='3',heroes_atk='',heroes_hp='',heroes_damage_value='999999999',each_round=False)
+                      invulnerable_auto=True,interval='10',chat_team='all',bot_count='10',mutation_count='1',mutation_points='10',heroes_wave='1',heroes_seconds='3',heroes_atk='',heroes_hp='',heroes_damage_value='999999999',each_round=False)
         self.settings_loading=True
+        self.listeners.clear();self.publish_listener_versions()
         try:
             for key,value in defaults.items():self.vars[key].set(settings.get(key,value))
+            self.refresh_zeta_choices(settings.get('zeta_selected_skill',ZETA_SKILLS[0]['id']))
             self.skin_position=self.valid_skin_position(settings.get('skin_dialog_position'))
             self.load_host_preferences(settings)
             self.waiting_roster=None
@@ -6167,10 +7540,12 @@ class App:
             self.feature_preferences=dict(settings.get('feature_preferences',{}))
             if not self.ready:self.vars['cheats'].set(self.cheats_desired)
             for key in ('hp','money'):self.set_action_mode(key,settings.get(key+'_mode','once'))
-            self.chat_text.delete('1.0','end');self.chat_text.insert('1.0',settings.get('chat_text',''))
+            self.load_chat_rows(settings)
             self.difficulty.current(settings.get('difficulty',7))
             for item in list(self.custom):self.delete_custom(item)
             for title,command in settings.get('custom',DATA['custom']):self.add_custom(title,command)
+            self.restore_scope_preferences(settings)
+            self.load_round_buttons(settings);self.load_feature_listeners(settings)
             self.update_scale_inputs();self.refresh_invulnerability_ui()
         finally:self.settings_loading=False
     def restore_defaults(self):
@@ -6231,12 +7606,25 @@ class App:
             # has already run. Do not scroll the background page as well.
             return 'break'
         widget=event.widget
-        if isinstance(widget,(ttk.Treeview,tk.Text,ttk.Combobox)):return
+        if isinstance(widget,(ttk.Treeview,tk.Text)):return
         while widget is not None:
             if isinstance(widget,ScrollFrame):return widget.wheel(event)
             widget=getattr(widget,'master',None)
     def reveal(self):
+        self.root.update_idletasks()
+        left,top,right,bottom=self.window_work_area()
+        width=min(max(320,right-left-32),max(1280,self.root.winfo_reqwidth()+8,
+                  self.player_values.winfo_reqwidth()+self.player_action_panel.winfo_reqwidth()+120))
+        height=min(max(300,bottom-top-64),max(800,self.root.winfo_reqheight()+8))
+        x=left+max(0,(right-left-width)//2);y=top+max(0,(bottom-top-height)//2-16)
+        self.root.geometry(f'{width}x{height}{x:+d}{y:+d}')
+        self.root.update_idletasks()
         self.fit_window();self.root.update_idletasks();dark_titlebar(self.root)
+        # A withdrawn window still reports its old size during fit_window.
+        # Apply the intended initial size after fitting and before first paint.
+        width=max(width,self.root.minsize()[0]);height=max(height,self.root.minsize()[1])
+        x=left+max(0,(right-left-width)//2);y=top+max(0,(bottom-top-height)//2-16)
+        self.root.geometry(f'{width}x{height}{x:+d}{y:+d}')
         self.root.deiconify();self.root.update_idletasks();dark_titlebar(self.root)
     def close(self):
         if self.closing:return

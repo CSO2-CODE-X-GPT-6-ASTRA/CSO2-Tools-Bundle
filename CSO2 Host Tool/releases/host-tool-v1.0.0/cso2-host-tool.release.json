@@ -3,8 +3,8 @@
   "product": "cso2-host-tool",
   "repository_id": 1410625177,
   "version": "1.0.0",
-  "source_sha256": "9b8a85ab5f67884f314faade6ea643bdbb83a32859f2af39f4b593aa70b430d1",
+  "source_sha256": "0d8a36d54f29cfb42a604f71573a33e7883f8ef58417fa217abaa539d8a8f258",
   "asset": "cso2-host-tool.pyw",
-  "size": 593047,
-  "sha256": "607674ff32b9ca88fdb2c4964d4a1e1626584aab84d6daacc0456356e26dc0e4"
+  "size": 691415,
+  "sha256": "b40fd88e442e63e3731b13fac442fc9ed87ecb2340a3225d41505c5567b08d21"
 }

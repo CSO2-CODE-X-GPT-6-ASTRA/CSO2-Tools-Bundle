@@ -5,15 +5,19 @@
 
 - **CSO2 Host Tool** — Player management, match settings and commands.
 
-  Validation: the published source matches the build that passed 38 scoped checks. No full CHECK was run; live gameplay still needs confirmation, including special Boss attacks already in progress.
+  Validation: 102 regression checks and 48 Chinese/English layout checks passed. Live match behavior still requires in-game confirmation.
 
-  This refresh keeps **v1.0.0**. If you already have v1.0.0, download `cso2-host-tool.pyw` again; the current updater only offers higher version numbers. The download contains empty personal settings.
+  This refresh keeps **v1.0.0**. Download `cso2-host-tool.pyw` again to get the current build. The download contains empty personal settings.
 
   <dl><dd>
 
   <details>
   <summary>Previous updates</summary>
   <dl><dd>
+
+  **2026-11-20:**
+
+  <p>Added bot skin selection.<br>CT and T can each use random female or male characters. Each bot draws its own skin every round.</p>
 
   **Updated on 2026-10-10:**
 
@@ -27,9 +31,16 @@
   </details>
 
   <details open>
-  <summary><strong>2026-11-20:</strong></summary>
+  <summary><strong>2026-11-26:</strong></summary>
   <dl><dd>
-  <p>Added bot skin selection.<br>CT and T can each use random female or male characters. Each bot draws its own skin every round.</p>
+
+  - Set up commands, weapon spawning, chat, Heroes and ZETA actions before joining a match; queued actions wait for the matching game state. Commands support once in the next match, every match, or disabled.
+  - Apply HP, money, locks and invulnerability automatically to yourself, your teammates or both teams. Ghost visibility can also be configured before joining.
+  - Chat now has separate entries with length counters, add/remove controls and ordering. Pending messages follow the selected channel; edited or deleted entries are removed from timers and saved settings.
+  - ZETA adds mutation capacity, mutation points and a preset for the next native mutation attempt. Skills and BOT skins use in-game names with searchable names, codes and IDs.
+  - Clearer Chinese/English menus, checkmarks for selected options, stable dropdown arrows, scrolling only inside open dropdowns, and wider default layouts with complete waiting-state labels.
+  - Fixed malformed commands interrupting polling, lost shutdown requests when the queue is full, next-match actions firing early after restart or before the first round snapshot, and already-owned skills being reported as newly acquired.
+
   </dd></dl>
   </details>
 
@@ -64,7 +75,7 @@
 
 Local server reference: [CSO2 Master Server — lateleite](https://github.com/lateleite/cso2-master-server).
 
-**Last updated: 2026-11-20**
+**Last updated: 2026-11-26**
 
 </details>
 
@@ -75,15 +86,19 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
 - **CSO2 Host Tool · 房主工具** — 玩家管理、对局设置与指令。
 
-  验证：发布源码与通过 38 项专项检查的版本一致。未运行全量 CHECK；游戏实际效果仍待确认，包括特殊 Boss 已开始的攻击动作。
+  验证：102 项回归和 48 次中英文布局检查通过；真实对局效果仍待实机确认。
 
-  本次保持 **v1.0.0**。已安装 v1.0.0 的用户请重新下载 `cso2-host-tool.pyw`，当前自动更新只提示更高版本号。下载文件中的个人设置为空。
+  本次保持 **v1.0.0**，请重新下载 `cso2-host-tool.pyw` 获取新版。下载文件中的个人设置为空。
 
   <dl><dd>
 
   <details>
   <summary>历史更新</summary>
   <dl><dd>
+
+  **2026-11-20 更新：**
+
+  <p>新增 BOT 换皮肤机制。<br>CT 和 T 的整队下拉框均可选择「全部随机女性角色」或「全部随机男性角色」，每个 BOT 每回合独立抽取。</p>
 
   **2026-10-10 更新：**
 
@@ -97,9 +112,16 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
   </details>
 
   <details open>
-  <summary><strong>2026-11-20 更新：</strong></summary>
+  <summary><strong>2026-11-26 更新：</strong></summary>
   <dl><dd>
-  <p>新增 BOT 换皮肤机制。<br>CT 和 T 的整队下拉框均可选择「全部随机女性角色」或「全部随机男性角色」，每个 BOT 每回合独立抽取。</p>
+
+  - 指令、地面生成、喊话、洛奇英雄传和生化 ZETA 操作可在进房前设置，等待对应游戏状态后执行。指令支持“新对局仅一次”“每局发送”和“停用”。
+  - 血量、金钱、锁定和无敌支持对本人、队友或敌我双方自动生效；幽灵显形也可在进房前预设。
+  - 喊话拆分为独立条目，增加长度统计、新增、删除和排序。待发消息跟随所选频道；编辑或删除的内容会同步更新定时器及保存设置。
+  - ZETA 增加技能数量上限、突变点数和下一次原生突变的指定技能预设。技能与 BOT 角色使用游戏内名称，支持按名称、代号及编号搜索。
+  - 改善中英文菜单、普通选中对勾、下拉箭头和滚轮行为；仅展开下拉后滚轮才切换列表。默认窗口加宽，等待状态文案完整显示。
+  - 修复错误引号中断轮询、队列满时关闭请求丢失、重启或首个回合快照导致下一局任务提前发送，以及已有技能误报为本次取得的问题。
+
   </dd></dl>
   </details>
 
@@ -134,6 +156,6 @@ Local server reference: [CSO2 Master Server — lateleite](https://github.com/la
 
 本地端相关项目：[CSO2 Master Server — lateleite](https://github.com/lateleite/cso2-master-server)。
 
-**最后更新：2026-11-20**
+**最后更新：2026-11-26**
 
 </details>
